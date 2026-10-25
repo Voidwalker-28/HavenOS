@@ -29,7 +29,7 @@
 - **Safety net** → `/#safety-net`
 - **Permissions** → `/privacy`
 - **FAQ** → `/faq`
-- **Download APK** → `[TODO: verified download URL]`
+- **Download APK** → `https://github.com/Voidwalker-28/HavenOS/releases/download/v1.0/HavenOS-vc10.apk`
 
 ## SEO / crawler files
 

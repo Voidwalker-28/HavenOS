@@ -46,15 +46,9 @@ The homepage contains the full narrative and anchors to: `#calm-control`, `#home
 
 Use only the supplied facts: customisable, tablet-aware Android launcher; home pages/grid/folders/stacks/widgets/dock/lock; layout snapshots and restore tools; Today column and schedulable Calm mode; drawer/search including hidden apps with biometric lock and typed sums; gestures and sensitivity controls; styling controls; Open-Meteo weather; notification badges and Now Playing through notification access; plain-language permissions; package `app.havenos.launcher`.
 
-### Explicit `[TODO]` items
+### Verified release data and remaining `[TODO]` items
 
-- Tagline
-- Price
-- License
-- Download URL
-- Minimum Android version
-- Developer name
-- Version
+The repository now verifies the download URL as `https://github.com/Voidwalker-28/HavenOS/releases/download/v1.0/HavenOS-vc10.apk`, license as MIT, minimum Android as 8.0 (API 26), and latest release as v1.0 (versionCode 10). Remaining unknowns are the tagline, price, developer name, and privacy policy effective date.
 
 ## Content architecture
 
