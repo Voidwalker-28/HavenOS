@@ -1,0 +1,15 @@
+# HavenOS .gitignore — never commit keystores, secrets, or build outputs.
+*.keystore
+*.jks
+local.properties
+*.apk
+*.aab
+# Gradle / Android build outputs
+build/
+.gradle/
+*.iml
+local.properties
+# IDE
+.idea/
+*.DS_Store
+# Release artifacts live on GitHub Releases, not in the tree.

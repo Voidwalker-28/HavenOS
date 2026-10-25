@@ -1,0 +1,29 @@
+[versions]
+# Compose BOM is not in the offline artifact cache, so versions are pinned
+# explicitly. material3 1.5.0-alpha17 declares compose 1.11.0-beta02 as its
+# dependency (verified in its POM); the whole compose stack must align to it —
+# forcing ui to 1.7.6 caused a runtime NoSuchMethodError
+# (ComposeUiNode$Companion.getApplyOnDeactivatedNodeAssertion) on device.
+compose = "1.11.0-beta02"
+material3 = "1.5.0-alpha17"
+activity-compose = "1.8.2"
+lifecycle = "2.8.3"
+room = "2.7.2"
+datastore = "1.1.7"
+savedstate = "1.4.0"
+junit = "4.13.2"
+
+[libraries]
+compose-ui = { module = "androidx.compose.ui:ui", version.ref = "compose" }
+compose-foundation = { module = "androidx.compose.foundation:foundation", version.ref = "compose" }
+compose-foundation-layout = { module = "androidx.compose.foundation:foundation-layout", version.ref = "compose" }
+compose-animation = { module = "androidx.compose.animation:animation", version.ref = "compose" }
+material3 = { module = "androidx.compose.material3:material3-android", version.ref = "material3" }
+activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+lifecycle-runtime = { module = "androidx.lifecycle:lifecycle-runtime", version.ref = "lifecycle" }
+lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
+room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+savedstate = { module = "androidx.savedstate:savedstate", version.ref = "savedstate" }
+junit = { module = "junit:junit", version.ref = "junit" }
