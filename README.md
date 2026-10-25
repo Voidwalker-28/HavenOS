@@ -168,3 +168,7 @@ libraries and the Open-Meteo terms are listed in
 - [docs/COVERAGE.md](docs/COVERAGE.md) — what is built, partial, or blocked
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — code map
 - [docs/LICENSES.md](docs/LICENSES.md) — third-party licenses
+
+## Marketing website
+
+The HavenOS product website lives in [`website/`](website/). It is a static Vite/React site that uses the supplied screen recording for its video-led hero and real UI evidence. Run it with `cd website && pnpm install && pnpm dev`.

@@ -1,0 +1,7 @@
+{
+  "routes": [
+    { "path": "/", "title": "HavenOS — The calm launcher" },
+    { "path": "/privacy", "title": "HavenOS Privacy — Permissions in plain words" },
+    { "path": "/faq", "title": "HavenOS FAQ — Answers before you install" }
+  ]
+}
