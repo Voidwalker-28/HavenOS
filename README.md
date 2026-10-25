@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/havenos-logo.png" alt="HavenOS logo — a white arch doorway on deep slate-navy" width="128" height="128">
+</p>
+
 # HavenOS
 
 ![Version](https://img.shields.io/badge/version-1.0%20(vc10)-blue.svg)
