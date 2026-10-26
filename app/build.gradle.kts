@@ -14,8 +14,8 @@ android {
         applicationId = "app.havenos.launcher"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "1.0"
+        versionCode = 11
+        versionName = "2.0"
     }
 
     // Signing is developer-supplied and intentionally not committed here.
@@ -26,15 +26,12 @@ android {
 
     buildTypes {
         debug {
-        }
+                    }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             isDebuggable = false
-            // No signingConfig here by default: add your own for a signed
-            // release build (see BUILDING.md). An unsigned release APK is
-            // still produced and is fine for local testing.
-            proguardFiles(
+                        proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
@@ -68,6 +65,7 @@ dependencies {
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.room.runtime)
     implementation(libs.datastore.preferences)
+    implementation(libs.work.runtime.ktx)
     implementation(libs.savedstate)
     ksp(libs.room.compiler)
     // Unit tests (JUnit4). Resolved lazily — assemble tasks never touch this
@@ -77,7 +75,7 @@ dependencies {
 
 // Offline pinning: newer artifacts' metadata drags the androidx.lifecycle atomic
 // group (and core-ktx) to versions absent from the offline cache. Pin to the
-// artifacts that exist in the offline cache.
+// artifacts that exist here — same approach as the sibling Styro build.
 configurations.all {
     resolutionStrategy {
         // Compose stack: aligned to 1.11.0-beta02 — the version material3
@@ -104,6 +102,12 @@ configurations.all {
         force("androidx.lifecycle:lifecycle-livedata:2.8.3")
         force("androidx.lifecycle:lifecycle-livedata-core:2.8.3")
         force("androidx.lifecycle:lifecycle-livedata-core-ktx:2.8.3")
+        // v2 M1: WorkManager pulls lifecycle-service into the graph, and
+        // AndroidX atomic-group alignment would otherwise lift it (and
+        // any other newly-entered lifecycle artifact) to 2.9.4, which is
+        // absent from the offline cache. Pin to the 2.8.3 line like the rest.
+        force("androidx.lifecycle:lifecycle-service:2.8.3")
+        force("androidx.lifecycle:lifecycle-livedata-ktx:2.8.3")
         force("androidx.lifecycle:lifecycle-runtime:2.8.3")
         force("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
         force("androidx.savedstate:savedstate-ktx:1.3.1")

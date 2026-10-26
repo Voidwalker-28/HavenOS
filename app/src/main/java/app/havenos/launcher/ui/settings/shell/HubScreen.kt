@@ -50,6 +50,8 @@ import app.havenos.launcher.data.parseProfiles
 import app.havenos.launcher.isNavServiceEnabled
 import app.havenos.launcher.theme.LocalFont
 import app.havenos.launcher.theme.LocalPalette
+import app.havenos.launcher.ui.settings.hubs.ApiHubScreen
+import app.havenos.launcher.ui.settings.hubs.ApiSearchEntries
 import app.havenos.launcher.ui.settings.hubs.DeviceDataHubScreen
 import app.havenos.launcher.ui.settings.hubs.DeviceDataEntries
 import app.havenos.launcher.ui.settings.hubs.DrawerSearchHubScreen
@@ -97,6 +99,7 @@ val HUB_ROWS: List<HubRowDef> = listOf(
     HubRowDef("gestures-motion", "Gestures & Motion", "👆"),
     HubRowDef("privacy", "Privacy", "🔒"),
     HubRowDef("device-data", "Device & Data", "💾"),
+    HubRowDef("apis", "APIs", "🌐"),
 )
 
 /** Hub route for a search entry, from its (normalized) hub display name. */
@@ -107,6 +110,7 @@ fun hubRouteForEntry(entry: SearchEntry): String = when (entry.hub) {
     "Gestures & Motion" -> "gestures-motion"
     "Privacy" -> "privacy"
     "Device & Data" -> "device-data"
+    "APIs" -> "apis"
     else -> "home"
 }
 
@@ -118,10 +122,11 @@ val allHubSearchEntries: List<SearchEntry> = searchEntries(
     GesturesMotionEntries,
     PrivacySearchEntries,
     DeviceDataEntries,
+    ApiSearchEntries,
 )
 
 /**
- * The filled registry: the hub screen plus all six hubs. The Gestures
+ * The filled registry: the hub screen plus all seven hubs (v2 M1 adds APIs). The Gestures
  * hub gets the host's real gesture dispatcher as its Test action, so
  * the Test button fires a real gesture instead of sitting dead.
  * Look gets the one panel Reset (its M5 category-1 reset, 20 fields);
@@ -177,6 +182,17 @@ fun createHubRegistry(
             route = "device-data",
             title = "Device & Data",
             content = { onBack, onSpotlight -> DeviceDataHubScreen(onBack, onSpotlight) },
+        ),
+        // v2 M1: APIs hub. Its panel Reset restores the 7 toggles only;
+        // keys/username are deliberately not wiped (see resetSection(10)).
+        "apis" to HubScreenDef(
+            route = "apis",
+            title = "APIs",
+            content = { onBack, onSpotlight -> ApiHubScreen(onBack, onSpotlight) },
+            reset = HubReset(
+                affectedCount = 7,
+                onReset = { app.settings.resetSection(10) },
+            ),
         ),
     ),
 )

@@ -27,6 +27,16 @@ import java.io.IOException
 const val DEFAULT_GESTURES =
     """{"swipeUp":"drawer","swipeDown":"quickPanel","doubleTap":"none","pinchIn":"none","twoFingerDown":"search"}"""
 
+/**
+ * GitHub username rules: ASCII letters, digits, hyphens only, 1–39
+ * chars, never a leading/trailing hyphen. Anything else is invalid, so
+ * a username is never interpolated raw into a URL path — invalid input
+ * falls back to the default "Voidwalker-28" at the setter and at read.
+ */
+fun isValidGithubUsername(v: String): Boolean =
+    v.length in 1..39 && !v.startsWith("-") && !v.endsWith("-") &&
+        v.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '-' }
+
 data class SettingsState(
     // Look & Feel (§ SETTINGS-SPEC 1)
     // Minimal-only since 2026-10-23: `look` is kept as stored history
@@ -232,6 +242,27 @@ data class SettingsState(
     // M9 edit mode: how many times edit mode has opened. The hint chip
     // shows only while this is < 3 (Doc 1 §3.10); old installs read 0.
     val editHintOpens: Int = 0,
+    // v2 M1 (API foundation): per-API on/off toggles. Every toggle gates
+    // BOTH its WorkManager worker (checked first in ApiRefreshWorker)
+    // AND its card/row (downstream workers check ApiToggles). Defaults:
+    // everything on except crypto, which is key-gated (no Demo key is
+    // ever shipped, so an on-by-default crypto toggle would fetch
+    // nothing useful until the user enters a key).
+    val apiQuote: Boolean = true,
+    val apiScores: Boolean = true,
+    val apiCrypto: Boolean = false,
+    val apiApod: Boolean = true,
+    val apiGithub: Boolean = true,
+    val apiCurrency: Boolean = true,
+    val apiDictionary: Boolean = true,
+    // User-supplied API keys, stored only on-device in DataStore, never
+    // committed or shipped. coingeckoKey = CoinGecko free Demo key
+    // (x-cg-demo-api-key header); nasaKey = personal NASA key override
+    // (blank = public DEMO_KEY). githubUsername = public GitHub user
+    // whose repos/events the GitHub card shows.
+    val coingeckoKey: String = "",
+    val nasaKey: String = "",
+    val githubUsername: String = "Voidwalker-28",
 )
 
 /** Effective grid (in CELLS) for the current orientation, honoring overrides. */
@@ -442,6 +473,17 @@ class Settings(ctx: Context) {
         val pageCount = intPreferencesKey("pageCount")
         // M9 edit mode.
         val editHintOpens = intPreferencesKey("editHintOpens")
+        // v2 M1 APIs.
+        val apiQuote = booleanPreferencesKey("api_quote")
+        val apiScores = booleanPreferencesKey("api_scores")
+        val apiCrypto = booleanPreferencesKey("api_crypto")
+        val apiApod = booleanPreferencesKey("api_apod")
+        val apiGithub = booleanPreferencesKey("api_github")
+        val apiCurrency = booleanPreferencesKey("api_currency")
+        val apiDictionary = booleanPreferencesKey("api_dictionary")
+        val coingeckoKey = stringPreferencesKey("api_coingecko_key")
+        val nasaKey = stringPreferencesKey("api_nasa_key")
+        val githubUsername = stringPreferencesKey("api_github_username")
     }
 
     /** Stale-type-safe preference read: any ClassCastException from a stale value falls back to default. */
@@ -646,6 +688,18 @@ class Settings(ctx: Context) {
                 pagesMigrated = p.safe(K.pagesMigrated, false),
                 pageCount = p.safe(K.pageCount, 0).coerceAtLeast(0),
                 editHintOpens = p.safe(K.editHintOpens, 0).coerceIn(0, 100),
+                apiQuote = p.safe(K.apiQuote, true),
+                apiScores = p.safe(K.apiScores, true),
+                apiCrypto = p.safe(K.apiCrypto, false),
+                apiApod = p.safe(K.apiApod, true),
+                apiGithub = p.safe(K.apiGithub, true),
+                apiCurrency = p.safe(K.apiCurrency, true),
+                apiDictionary = p.safe(K.apiDictionary, true),
+                coingeckoKey = p.safe(K.coingeckoKey, ""),
+                nasaKey = p.safe(K.nasaKey, ""),
+                githubUsername = p.safe(K.githubUsername, "Voidwalker-28")
+                    .ifBlank { "Voidwalker-28" }
+                    .let { if (isValidGithubUsername(it)) it else "Voidwalker-28" },
         )
     }
 
@@ -890,6 +944,27 @@ class Settings(ctx: Context) {
     // M9 edit mode: hint-chip open count (Doc 1 §3.10).
     suspend fun setEditHintOpens(v: Int) = update { it[K.editHintOpens] = v.coerceIn(0, 100) }
 
+    // v2 M1 API toggles + key fields. [api] is the ApiId name
+    // ("QUOTE", "SCORES", "CRYPTO", "APOD", "GITHUB", "CURRENCY",
+    // "DICTIONARY"); unknown names are ignored, never crash.
+    suspend fun setApiEnabled(api: String, on: Boolean) = update {
+        when (api) {
+            "QUOTE" -> it[K.apiQuote] = on
+            "SCORES" -> it[K.apiScores] = on
+            "CRYPTO" -> it[K.apiCrypto] = on
+            "APOD" -> it[K.apiApod] = on
+            "GITHUB" -> it[K.apiGithub] = on
+            "CURRENCY" -> it[K.apiCurrency] = on
+            "DICTIONARY" -> it[K.apiDictionary] = on
+        }
+    }
+    suspend fun setCoingeckoKey(v: String) = update { it[K.coingeckoKey] = v.trim() }
+    suspend fun setNasaKey(v: String) = update { it[K.nasaKey] = v.trim() }
+    suspend fun setGithubUsername(v: String) = update {
+        val cleaned = v.trim()
+        it[K.githubUsername] = if (isValidGithubUsername(cleaned)) cleaned else "Voidwalker-28"
+    }
+
     /** Section defaults for Settings → "Reset to default" per section. */
     suspend fun resetSection(section: Int) {
         when (section) {
@@ -963,6 +1038,15 @@ class Settings(ctx: Context) {
             9 -> update {
                 it[K.searchContacts] = false; it[K.searchCalendar] = false
                 it[K.searchSettings] = true; it[K.searchCalc] = true
+            }
+            // v2 M1 APIs: toggles back to defaults; keys/username are
+            // NOT cleared by a reset (wiping a user-entered key on a
+            // section reset would be silent data loss).
+            10 -> update {
+                it[K.apiQuote] = true; it[K.apiScores] = true
+                it[K.apiCrypto] = false; it[K.apiApod] = true
+                it[K.apiGithub] = true; it[K.apiCurrency] = true
+                it[K.apiDictionary] = true
             }
         }
     }

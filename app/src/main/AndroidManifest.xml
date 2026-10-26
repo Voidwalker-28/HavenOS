@@ -2,7 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Weather (§13) is the ONLY network use: Open-Meteo hosts, allowlisted in code. -->
+    <!-- Network (v2 M1): weather (Open-Meteo) + the seven v2 APIs, each
+         host-allowlisted in code (data/network/ApiClient.kt ApiHosts).
+         No other host is ever fetched. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />

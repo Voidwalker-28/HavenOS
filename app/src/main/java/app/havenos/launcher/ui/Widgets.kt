@@ -1402,7 +1402,7 @@ private fun StackEditorDialog(
 // ---------------------------------------------------------------- AT A GLANCE
 
 /**
- * At-a-glance widget (stacked summary behavior, original code): one
+ * At-a-glance widget (Niagara-inspired behavior, original code): one
  * quiet line of date, the next calendar event, and the weather summary.
  * Reads the same sources the existing widgets use — CalendarRepo for
  * events, the WeatherStore cache for weather — with no new permissions

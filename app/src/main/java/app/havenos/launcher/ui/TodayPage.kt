@@ -243,6 +243,9 @@ fun TodayPage(
     sizeClass: HomeSizeClass,
     onEmptyLongPress: () -> Unit = {},
     modifier: Modifier = Modifier,
+    // v2 M1: API cards read this for their toggles/keys; null renders
+    // no API cards (existing cards are unaffected).
+    settings: app.havenos.launcher.data.SettingsState? = null,
 ) {
     val palette = LocalPalette.current
     val context = LocalContext.current
@@ -288,6 +291,10 @@ fun TodayPage(
                             TodaySuggestedCard(suggested, appRepo, onLaunch, palette)
                         }
                     }
+                    // v2 M1 API cards: full-width below the two columns,
+                    // after the built-in cards (weather card untouched).
+                    Spacer(Modifier.height(16.dp))
+                    TodayApiCards(settings)
                 }
                 else -> {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -295,6 +302,8 @@ fun TodayPage(
                         TodayAgendaCard(events, calendarGranted, onRequestCalendarPermission, palette)
                         TodaySuggestedCard(suggested, appRepo, onLaunch, palette)
                         TodayBatteryCardView(context, palette)
+                        // v2 M1 API cards, after the built-in cards.
+                        TodayApiCards(settings)
                     }
                 }
             }

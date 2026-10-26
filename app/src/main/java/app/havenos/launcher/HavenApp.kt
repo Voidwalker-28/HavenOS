@@ -12,6 +12,8 @@ import app.havenos.launcher.data.TasksStore
 import app.havenos.launcher.data.WallpaperStore
 import app.havenos.launcher.data.WeatherStore
 import app.havenos.launcher.data.buildBackupJson
+import app.havenos.launcher.data.network.ApiRefreshScheduler
+import app.havenos.launcher.data.network.ApiStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,6 +36,9 @@ class HavenApp : Application() {
         private set
     lateinit var tasks: TasksStore
         private set
+    /** v2 M1: the single cache-first API store (Room api_cache table). */
+    lateinit var apiStore: ApiStore
+        private set
     lateinit var widgetHost: AppWidgetHost
         private set
     lateinit var widgetManager: AppWidgetManager
@@ -49,6 +54,16 @@ class HavenApp : Application() {
         wallpaper = WallpaperStore(this)
         weather = WeatherStore(this)
         tasks = TasksStore(this)
+        apiStore = ApiStore(db.apiCache())
+        // v2 API refresh: KEEP policy, so re-launching never duplicates
+        // or resets the schedule; each worker re-checks its toggle.
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                ApiRefreshScheduler.scheduleAll(this@HavenApp)
+            } catch (t: Throwable) {
+                // refresh scheduling is best-effort; cards still read cache
+            }
+        }
         widgetManager = AppWidgetManager.getInstance(this)
         widgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
         maybeDailyBackup()

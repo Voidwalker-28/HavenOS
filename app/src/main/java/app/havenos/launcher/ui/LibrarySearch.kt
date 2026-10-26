@@ -264,3 +264,58 @@ fun decodeLibraryDragPayload(text: String): LibraryDragPayload? {
     if (appKey.isBlank() || pkg.isBlank() || cls.isBlank()) return null
     return LibraryDragPayload(appKey, pkg, cls, label)
 }
+
+// ---------------------------------------------------------------------------
+// v2 M1 search extras — pure query parsing (no Android dependencies).
+// These parsers only decide WHETHER an extra row may appear; fetching
+// and rendering live in Drawer.kt's SearchResultsList. A null result
+// leaves existing search behavior byte-identical.
+// ---------------------------------------------------------------------------
+
+/** A parsed "amount CODE to CODE" conversion request. Codes are uppercase. */
+data class CurrencyConversionQuery(
+    val amount: Double,
+    val from: String,
+    val to: String,
+)
+
+private val CURRENCY_QUERY_REGEX = Regex(
+    "\\$?\\s*(\\d+(?:\\.\\d+)?)\\s+([A-Za-z]{3})\\s+(?:to|in)\\s+([A-Za-z]{3})",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
+ * Parse a currency conversion query. Accepted (case-insensitive,
+ * surrounding whitespace ignored):
+ * "<amount> <CODE> to|in <CODE>" — e.g. "100 USD to INR",
+ * "100 usd in inr", "$100 USD to INR".
+ * Anything else returns null: missing codes ("$100 to INR" has no
+ * source code), extra words, non-numeric amounts, zero or negative
+ * amounts, or a code that is not exactly 3 letters.
+ */
+fun parseCurrencyQuery(query: String): CurrencyConversionQuery? {
+    val match = CURRENCY_QUERY_REGEX.matchEntire(query.trim()) ?: return null
+    val amount = match.groupValues[1].toDoubleOrNull() ?: return null
+    if (!amount.isFinite() || amount <= 0.0) return null
+    return CurrencyConversionQuery(
+        amount = amount,
+        from = match.groupValues[2].uppercase(),
+        to = match.groupValues[3].uppercase(),
+    )
+}
+
+private val DICTIONARY_WORD_REGEX = Regex("[A-Za-z]+")
+
+/**
+ * The dictionary lookup word for [query], or null. Only a single word
+ * of letters (no spaces, digits, or punctuation) qualifies, and only
+ * when no app matched ([hasAppMatches] false) — so normal app search
+ * is never disturbed. Returns the word lowercased (the cache key and
+ * the endpoint lowercase it again anyway).
+ */
+fun parseDictionaryWord(query: String, hasAppMatches: Boolean): String? {
+    if (hasAppMatches) return null
+    val word = query.trim()
+    if (!DICTIONARY_WORD_REGEX.matches(word)) return null
+    return word.lowercase()
+}

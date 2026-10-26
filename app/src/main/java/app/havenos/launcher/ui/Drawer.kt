@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -112,6 +113,12 @@ import app.havenos.launcher.data.hiddenApps
 import app.havenos.launcher.data.iconDp
 import app.havenos.launcher.data.parseAllowedCalendars
 import app.havenos.launcher.data.parseLabelOverrides
+import app.havenos.launcher.data.network.ApiCacheKeys
+import app.havenos.launcher.data.network.ApiClient
+import app.havenos.launcher.data.network.ApiId
+import app.havenos.launcher.data.network.ApiToggles
+import app.havenos.launcher.data.network.CachedState
+import app.havenos.launcher.data.network.offlineLabel
 import app.havenos.launcher.data.parseMembers
 import app.havenos.launcher.theme.GlassSurface
 import app.havenos.launcher.theme.LocalFont
@@ -125,8 +132,11 @@ import app.havenos.launcher.ui.settings.shell.TextFieldDialog
 import app.havenos.launcher.ui.settings.shell.searchSettingsEntries
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -1135,6 +1145,14 @@ private fun SearchResultsList(
     }
     val actionHits = remember(query) { libraryActions(query) }
 
+    // v2 M1 search extras: pure parses only. The rows themselves render
+    // below, inside this same LazyColumn, and never replace a section
+    // above; a null parse adds nothing at all.
+    val currencyQuery = remember(query) { parseCurrencyQuery(query) }
+    val dictionaryWord = remember(query, ranked) {
+        parseDictionaryWord(query, ranked.isNotEmpty())
+    }
+
     val contactsGranted = remember(context) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) ==
             PackageManager.PERMISSION_GRANTED
@@ -1275,6 +1293,12 @@ private fun SearchResultsList(
                 }
             }
         }
+        // v2 M1 search extras (currency + dictionary): additional rows
+        // below the existing sections, above the Web fallback. Each
+        // renders only when its cache-first flow holds data, so a
+        // toggle-off / failed parse / offline-no-cache / not-found
+        // query adds nothing here.
+        searchExtrasItems(app, state, currencyQuery, dictionaryWord)
         // Web fallback: the user's own engine, via the system search
         // intent. This app makes no web request itself.
         item { SectionHeader("Web") }
@@ -1293,6 +1317,193 @@ private fun SearchResultsList(
                     color = palette.muted,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v2 M1 search extras: currency + dictionary rows for SearchResultsList.
+// ADDITIVE ONLY: these items sit below the existing sections and render
+// nothing at all when their toggle is off, the query does not parse,
+// the fetch fails with no cache, or (dictionary) the word is not found.
+// They never replace app/calc/settings rows and never invent data:
+// rates are daily currency-api values labelled with their rate date,
+// never presented as live; a dictionary 404 is a normal "show nothing".
+// The "no matches" note below is deliberately left untouched: it stays
+// literally true (no app, setting or contact matched) and keeps the
+// no-data case byte-identical to before.
+// ---------------------------------------------------------------------------
+
+/** One parsed currency-api response: {date, <base>: {<target>: rate}}. */
+private data class CurrencyRate(val date: String, val rate: Double)
+
+/** Parse a currency-api body for [from] -> [to]. Null on any malformation. */
+private fun parseCurrencyRate(json: String, from: String, to: String): CurrencyRate? {
+    return try {
+        val root = JSONObject(json)
+        val date = root.optString("date")
+        if (date.isBlank()) return null
+        val rate = root.optJSONObject(from.lowercase())
+            ?.optDouble(to.lowercase(), Double.NaN) ?: Double.NaN
+        if (!rate.isFinite() || rate <= 0.0) return null
+        CurrencyRate(date, rate)
+    } catch (t: Throwable) {
+        null
+    }
+}
+
+/** One Free Dictionary entry: first meaning's first definition (+ example). */
+private data class DictionaryDefinition(
+    val word: String,
+    val partOfSpeech: String,
+    val definition: String,
+    val example: String?,
+)
+
+/** Parse a Free Dictionary body (a JSON array). Null on any malformation. */
+private fun parseDictionaryEntry(json: String, fallbackWord: String): DictionaryDefinition? {
+    return try {
+        val entry = JSONArray(json).optJSONObject(0) ?: return null
+        val meanings = entry.optJSONArray("meanings")?.optJSONObject(0) ?: return null
+        val def = meanings.optJSONArray("definitions")?.optJSONObject(0) ?: return null
+        val definition = def.optString("definition")
+        if (definition.isBlank()) return null
+        DictionaryDefinition(
+            word = entry.optString("word").ifBlank { fallbackWord },
+            partOfSpeech = meanings.optString("partOfSpeech"),
+            definition = definition,
+            example = def.optString("example").ifBlank { null },
+        )
+    } catch (t: Throwable) {
+        null
+    }
+}
+
+/** Display an amount: whole numbers without decimals, else up to 4dp trimmed. */
+private fun formatSearchAmount(value: Double): String {
+    if (kotlin.math.abs(value) < 1e15 && value == value.toLong().toDouble()) {
+        return value.toLong().toString()
+    }
+    return String.format(Locale.US, "%.4f", value).trimEnd('0').trimEnd('.')
+}
+
+/** Display a converted amount: 2dp normally, 4dp when under 0.01. */
+private fun formatConvertedAmount(value: Double): String =
+    if (kotlin.math.abs(value) < 0.01) String.format(Locale.US, "%.4f", value)
+    else String.format(Locale.US, "%.2f", value)
+
+/**
+ * The two v2 M1 extra sections for [SearchResultsList]'s LazyColumn.
+ * [currencyQuery] / [dictionaryWord] are the pure parses from
+ * LibrarySearch.kt (null = no row, always). Each section is a single
+ * item that renders only when its cache-first flow holds data, so an
+ * in-flight or failed fetch with no cache adds zero height. Network
+ * runs on Dispatchers.IO: inside the fetch lambda for currency, via
+ * flowOn(Dispatchers.IO) for the dictionary row (its fetch lambda is
+ * the blocking ApiClient call inside dictionaryFlow, so without the
+ * flowOn it would run on the main thread and fail). The flow itself
+ * only ever emits cached-or-fetched data, never a spinner or an error row.
+ */
+private fun LazyListScope.searchExtrasItems(
+    app: HavenApp,
+    state: SettingsState,
+    currencyQuery: CurrencyConversionQuery?,
+    dictionaryWord: String?,
+) {
+    if (currencyQuery != null && ApiToggles.isEnabled(state, ApiId.CURRENCY)) {
+        item(key = "extra:currency:${currencyQuery.from}:${currencyQuery.to}:${currencyQuery.amount}") {
+            val palette = LocalPalette.current
+            val clipboard = LocalClipboardManager.current
+            val flow = remember(currencyQuery) {
+                app.apiStore.cacheFirstFlow(
+                    ApiId.CURRENCY,
+                    ApiCacheKeys.currency(currencyQuery.from),
+                    { json -> parseCurrencyRate(json, currencyQuery.from, currencyQuery.to) },
+                    { withContext(Dispatchers.IO) { ApiClient.getCurrency(currencyQuery.from) } },
+                )
+            }
+            val cached by flow.collectAsState(
+                initial = CachedState<CurrencyRate>(null, false, 0L, false),
+            )
+            val data = cached.data
+            if (data != null) {
+                val line = "${formatSearchAmount(currencyQuery.amount)} ${currencyQuery.from} = " +
+                    "${formatConvertedAmount(currencyQuery.amount * data.rate)} ${currencyQuery.to}"
+                SectionHeader("Currency")
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { clipboard.setText(AnnotatedString(line)) }
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            line,
+                            color = palette.onSurface,
+                            fontSize = 15.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "Rates dated ${data.date}" +
+                                if (cached.isOffline) " · ${offlineLabel(true)}" else "",
+                            color = palette.muted,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text("Tap to copy", color = palette.muted, fontSize = 11.sp)
+                }
+            }
+        }
+    }
+    if (dictionaryWord != null && ApiToggles.isEnabled(state, ApiId.DICTIONARY)) {
+        item(key = "extra:dictionary:$dictionaryWord") {
+            val palette = LocalPalette.current
+            val flow = remember(dictionaryWord) {
+                app.apiStore.dictionaryFlow(dictionaryWord).flowOn(Dispatchers.IO)
+            }
+            val cached by flow.collectAsState(
+                initial = CachedState<String>(null, false, 0L, false),
+            )
+            val entry = remember(cached.data, dictionaryWord) {
+                cached.data?.let { parseDictionaryEntry(it, dictionaryWord) }
+            }
+            if (entry != null) {
+                SectionHeader("Dictionary")
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        buildString {
+                            append(entry.word)
+                            if (entry.partOfSpeech.isNotBlank()) append(" · ${entry.partOfSpeech}")
+                        },
+                        color = palette.onSurface,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        entry.definition,
+                        color = palette.onSurface,
+                        fontSize = 14.sp,
+                    )
+                    entry.example?.let { example ->
+                        Text(
+                            "“$example”",
+                            color = palette.muted,
+                            fontSize = 13.sp,
+                        )
+                    }
+                    if (cached.isOffline) {
+                        Text(offlineLabel(true), color = palette.muted, fontSize = 11.sp)
+                    }
+                }
             }
         }
     }

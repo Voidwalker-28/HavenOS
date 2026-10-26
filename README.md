@@ -4,7 +4,7 @@
 
 # HavenOS
 
-![Version](https://img.shields.io/badge/version-1.0%20(vc10)-blue.svg)
+![Version](https://img.shields.io/badge/version-2.0%20(vc11)-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Android%2026%2B-lightgrey.svg)
 
@@ -15,7 +15,7 @@ weather widget.
 
 - **Package:** `app.havenos.launcher`
 - **Minimum Android:** 8.0 (API 26) · **Target:** Android 16 (API 36)
-- **Latest release:** [v1.0 (versionCode 10)](CHANGELOG.md) — see
+- **Latest release:** [v2.0 (versionCode 11)](CHANGELOG.md) — see
   [Releases](https://github.com/Voidwalker-28/HavenOS/releases) for the APK.
 
 > HavenOS is a launcher, not an operating system. It replaces your home
@@ -124,9 +124,20 @@ draw-over-other-apps permission.
 
 ### Weather (optional)
 
-Weather comes from Open-Meteo only — the app's sole network feature, and
-it can be switched off (off means cached data only). See
-[docs/LICENSES.md](docs/LICENSES.md) for the attribution and terms.
+Weather comes from Open-Meteo, and it can be switched off (off means
+cached data only). See [docs/LICENSES.md](docs/LICENSES.md) for the
+attribution and terms.
+
+### APIs (v2.0+)
+
+HavenOS may use public network APIs, each behind its own toggle in
+Settings → APIs, with cache-first behavior so the launcher stays instant
+offline. Today feed cards: quote of the day (Quotable), live scores
+(SportScore — cricket + football), crypto ticker (CoinGecko — needs a
+free user-supplied Demo key), NASA picture of the day, and a GitHub card
+(public data only). Library search also answers currency conversions and
+dictionary definitions. Every API talks only to its allowlisted hosts;
+see [docs/API-INTEGRATION.md](docs/API-INTEGRATION.md).
 
 ### Settings
 

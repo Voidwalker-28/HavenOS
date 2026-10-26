@@ -1416,6 +1416,7 @@ fun PagedHome(
                             suggested = suggested,
                             sizeClass = sizeClass,
                             onEmptyLongPress = emptyLongPressNow,
+                            settings = state,
                         )
                     } else {
                         Column(Modifier.fillMaxSize()) {

@@ -2085,6 +2085,7 @@ fun HavenRoot(
                         onAddWidget = { showWidgetSheet = true },
                         onEnterCalm = enterCalm,
                         modifier = Modifier.weight(0.30f).fillMaxHeight(),
+                        settings = state,
                     )
                     Column(Modifier.weight(0.70f).fillMaxHeight()) {
                         EditToolbarBlock()
@@ -2125,6 +2126,7 @@ fun HavenRoot(
                             onEnterCalm = enterCalm,
                             expanded = mediumTodayExpanded,
                             onToggle = { mediumTodayExpanded = !mediumTodayExpanded },
+                            settings = state,
                         )
                     }
                     ScrollArea(Modifier.weight(1f))

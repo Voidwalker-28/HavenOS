@@ -11,6 +11,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import app.havenos.launcher.data.network.ApiCacheDao
+import app.havenos.launcher.data.network.ApiCacheRow
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONArray
 
@@ -268,9 +270,22 @@ val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
     }
 }
 
+// v2 M1 (2026-10-26): schema v5 only ADDS the api_cache table (see
+// data/network/ApiCache.kt); existing tables are untouched, so layouts
+// survive the upgrade verbatim.
+val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `api_cache` " +
+                "(`key` TEXT NOT NULL, `json` TEXT NOT NULL, `updatedAtMs` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`key`))",
+        )
+    }
+}
+
 @Database(
-    entities = [HomeItem::class, Folder::class, LayoutProfileRow::class, LayoutSnapshotRow::class],
-    version = 4,
+    entities = [HomeItem::class, Folder::class, LayoutProfileRow::class, LayoutSnapshotRow::class, ApiCacheRow::class],
+    version = 5,
     exportSchema = false,
 )
 abstract class HavenDb : RoomDatabase() {
@@ -278,11 +293,12 @@ abstract class HavenDb : RoomDatabase() {
     abstract fun folders(): FolderDao
     abstract fun layoutProfiles(): LayoutProfileDao
     abstract fun layoutSnapshots(): LayoutSnapshotDao
+    abstract fun apiCache(): ApiCacheDao
 
     companion object {
         fun create(ctx: Context): HavenDb =
             Room.databaseBuilder(ctx.applicationContext, HavenDb::class.java, "havenos.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }

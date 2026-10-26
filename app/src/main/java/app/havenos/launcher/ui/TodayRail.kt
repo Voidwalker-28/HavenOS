@@ -83,6 +83,9 @@ fun TodayRailContent(
     onAddWidget: () -> Unit,
     onEnterCalm: () -> Unit,
     modifier: Modifier = Modifier,
+    // v2 M1: API cards read this for their toggles/keys; null renders
+    // no API cards (existing cards are unaffected).
+    settings: app.havenos.launcher.data.SettingsState? = null,
 ) {
     val palette = LocalPalette.current
     val context = LocalContext.current
@@ -121,6 +124,8 @@ fun TodayRailContent(
         TodayAgendaCard(events, calendarGranted, onRequestCalendarPermission, palette)
         TodayBatteryCardView(context, palette)
         TodaySuggestedCard(suggested, appRepo, onLaunch, palette)
+        // v2 M1 API cards, after the built-in cards (weather card untouched).
+        TodayApiCards(settings)
         // Two or three quick actions (doc §Today rail): Search, Add
         // widget, Calm. Tonal buttons, 48dp targets, labelled.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -172,6 +177,7 @@ fun TodayRail(
     onAddWidget: () -> Unit,
     onEnterCalm: () -> Unit,
     modifier: Modifier = Modifier,
+    settings: app.havenos.launcher.data.SettingsState? = null,
 ) {
     Column(
         modifier
@@ -190,6 +196,7 @@ fun TodayRail(
             onSearch = onSearch,
             onAddWidget = onAddWidget,
             onEnterCalm = onEnterCalm,
+            settings = settings,
         )
     }
 }
@@ -214,6 +221,7 @@ fun MediumTodayStrip(
     expanded: Boolean,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
+    settings: app.havenos.launcher.data.SettingsState? = null,
 ) {
     val palette = LocalPalette.current
     val live = LocalState.current
@@ -295,6 +303,7 @@ fun MediumTodayStrip(
                         onSearch = onSearch,
                         onAddWidget = onAddWidget,
                         onEnterCalm = onEnterCalm,
+                        settings = settings,
                     )
                 }
             }

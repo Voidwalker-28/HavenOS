@@ -1,8 +1,45 @@
 # Changelog
 
 All notable changes to HavenOS are documented here. HavenOS is a launcher;
-version numbers below are the launcher's own (`versionName` stays `1.0`,
-`versionCode` increments per release so builds stay distinguishable).
+`versionName` marks the major line, `versionCode` increments per release
+so builds stay distinguishable.
+
+## [2.0] — 2026-10-26 — versionCode 11
+
+API integration. The offline-only rule is lifted: the launcher may now use
+public network APIs, each behind its own toggle, with cache-first behavior
+so it stays instant offline.
+
+### Network foundation
+
+- One shared API client with a per-API host allowlist enforced in code.
+- Room cache + WorkManager refresh per API; stale data shows with a
+  "last updated / offline" state, never a blank screen or endless spinner.
+- New Settings → APIs hub: one toggle per API, no new permissions beyond
+  INTERNET, no analytics, no hardcoded keys.
+
+### Today feed cards (each toggleable)
+
+- Quote of the day (Quotable).
+- Live scores (SportScore — cricket + football, with attribution).
+- Crypto ticker (CoinGecko — key-gated: needs a free user-supplied Demo
+  key in Settings → APIs; off by default until a key is entered).
+- NASA picture of the day (public DEMO_KEY by default, personal-key
+  override available; optional set-as-HavenOS-wallpaper action).
+- GitHub card (public data only, username configurable).
+- Weather (Open-Meteo) unchanged.
+
+### Search extras
+
+- Currency conversion rows in Library search (currency-api, daily rates).
+- Dictionary definition rows in Library search (Free Dictionary).
+
+### Known limitations (device checks still open)
+
+- Quote card could not be verified from the build environment (source
+  unreachable there); on-device check pending.
+- Refresh cadences, 429 behavior, and the Room 4→5 migration on an
+  existing install need on-device confirmation.
 
 ## [1.0] — 2026-10-25 — versionCode 10
 
