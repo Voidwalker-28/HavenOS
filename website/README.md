@@ -19,8 +19,9 @@ pnpm build
 
 The site includes the following routes:
 
-- `/` — HavenOS — The calm launcher
+- `/` — HavenOS — A home screen with a way back (generated-light landing page)
+- `/product` — HavenOS — The calm launcher (glass/depth product page)
 - `/privacy` — HavenOS Privacy — Permissions in plain words
 - `/faq` — HavenOS FAQ — Answers before you install
 
-The homepage uses a compressed loop derived from the supplied HavenOS screen recording at `public/assets/havenos-hero.mp4`, plus real UI stills from the same recording. Unknown release information remains marked `[TODO]` rather than being guessed.
+The product page uses a compressed loop derived from the supplied HavenOS screen recording at `public/assets/havenos-hero.mp4`, plus real UI stills from the same recording. The landing page uses browser-generated ribbon and spectrum canvases, keeping the two visual systems separate. The verified APK release is linked from the CTAs.

@@ -6,23 +6,23 @@ Read the supplied brief as the product contract. Inspect the APK archive for pac
 
 ## 02 — Plan and sitemap
 
-Define the positioning, page names, section order, design tokens, content boundaries, routes, and the remaining `[TODO]` placeholders. Keep the page count intentional: one narrative homepage plus dedicated Privacy and FAQ pages.
+Define two intentionally separate experiences: `/` is the generated-light landing page from the first reference; `/product` is the glass/depth product page from the second reference; `/privacy` and `/faq` remain dedicated reading pages. Keep the visual systems separate rather than blending them.
 
 ## 03 — Design system
 
-Implement the quiet tactile editorial direction with warm paper, charcoal ink, a single mineral-violet accent, Satoshi/IBM Plex Mono typography, asymmetrical layouts, evidence-led screenshot plates, and restrained depth. Make the same tokens drive light/dark mode, buttons, tables, cards, and focus states.
+Implement the landing system with near-black ground, indigo generated ribbons, Inter/JetBrains Mono, hairlines, explicit track counts, independent canvas animations, and square controls. Keep the product route on its own dark/light glass system with Inter, emerald highlights, 20px blur, rounded containers, and the supplied recording/stills as evidence.
 
 ## 04 — Asset preparation
 
-Create optimized JPEG/WebP derivatives from the recorded frames. Keep descriptive filenames and alt text. Do not publish the APK or the original screen recording. Use CSS perspective on the stills for the 3D staging requested by the brief, without fake phone frames or decorative floating shapes.
+Create optimized JPEG/WebP derivatives from the recorded frames. Keep descriptive filenames and alt text. Do not publish the APK or the original screen recording. Use the recording only on `/product`; the landing route uses generated canvas light and no bitmap hero.
 
 ## 05 — Implementation
 
-Create a Vite + React + TypeScript static site. Add a shared shell with header/footer, page-level metadata, theme toggle, responsive section primitives, screenshot evidence components, a calm/full-control switcher, permissions table, and accessible FAQ accordions. Implement `/`, `/privacy`, and `/faq` with browser-native routing/fallback-safe links.
+Create a Vite + React + TypeScript static site. Add route-aware metadata, a generated-light landing page with intro stage/ribbon/spectrum/FAQ canvases, a separate glass/depth product page with screenshot evidence, shared privacy/FAQ pages, accessible controls, and fallback-safe links for `/`, `/product`, `/privacy`, and `/faq`.
 
 ## 06 — SEO and static delivery
 
-Add semantic HTML, title/description/OG tags, favicon, `robots.txt`, `sitemap.xml`, and `manus-routes.json`. Keep the download action visibly marked `[TODO]` until a verified URL exists. Configure a clean static build to `dist/`.
+Add semantic HTML, title/description/OG tags, favicon, `robots.txt`, `sitemap.xml`, and `manus-routes.json`. Use the verified GitHub APK release URL in all download actions. Configure a clean static build to `dist/`.
 
 ## 07 — QA pass
 

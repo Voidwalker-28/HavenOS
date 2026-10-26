@@ -6,41 +6,42 @@ Build a production-quality, static marketing website for HavenOS, an Android hom
 
 ## Design read
 
-Reading this as: a consumer Android launcher landing site for tweak-minded users, with a quiet tactile/editorial language, leaning toward warm paper, ink, mineral violet, and restrained product depth.
+Reading this as two intentionally separate experiences: a generated-light, near-black landing page from the first reference, followed by a glass/depth product page from the second reference. The supplied recording is evidence for the product page only; it does not define the landing-page visual system.
 
 ### Design directions considered
 
-- Quiet tactile editorial — 0.08 probability: warm paper, ink-heavy type, measured asymmetry, product screenshots treated like printed plates.
-- Dark utility instrument — 0.06 probability: near-black canvas, compact labels, monospace accents, settings-led storytelling.
+- Generated-light instrument — 0.08 probability: near-black ground, animated ribbons, mono furniture, explicit tracks, no bitmap hero.
+- Glass depth product page — 0.06 probability: immersive evidence, rounded glass layers, emerald highlights, structured feature blocks.
 - Modular gallery — 0.04 probability: workbench-like panels, larger crops, variable rhythm, more visual than explanatory.
 
-Chosen direction: **quiet tactile editorial**.
+Chosen direction: **two-route split: generated-light landing + glass depth product page**.
 
 ### Design system
 
-- **Design movement:** quiet tactile editorial with Android-native product evidence and print-like spacing.
-- **Core principles:** calm before clever; show the actual interface; make control feel legible; explain trade-offs without sales fog.
-- **Color philosophy:** warm off-white and charcoal create a reading surface; one mineral-violet accent echoes the visible HavenOS settings UI without turning into a gradient or glow system.
-- **Tokens:** paper `#F3F0EA`, ink `#171719`, muted ink `#716F6B`, line `#D9D3CB`, accent `#7B4DFF`, accent-dark `#5B2CCF`, surface-dark `#141416`, surface-mid `#242328`, light text `#F7F5F1`.
-- **Typography:** Satoshi for display and body, IBM Plex Mono for labels, metadata, permissions, and app facts. Two families max, both self-hosted through local CSS/font import fallback.
-- **Layout paradigm:** editorial asymmetry; wide hero split, horizontal evidence rail, bento crops for feature proof, and a table-led permissions section. Avoid repeated three-card grids.
-- **Signature elements:** a small HavenOS mark made from two offset rounded bars; violet “control marks” on section labels; screenshot plates with a gentle perspective tilt and paper-like shadow.
-- **Interaction philosophy:** interactions should clarify state: tabs reveal the alternate Calm/full-control framing, the screenshot rail advances evidence, accordions expose detail, and the theme toggle changes the reading surface.
-- **Animation:** short opacity/translate reveals and subtle screenshot drift. No looping spectacle. Disable transforms and reduce motion under `prefers-reduced-motion`.
+- **Design movement:** generated-light landing paired with a glass/depth product narrative.
+- **Core principles:** separate the visual systems; make the product mechanism visible; show actual interface evidence; explain trade-offs without sales fog.
+- **Color philosophy:** landing uses near-black `#0A0A0A` with indigo generated light and no decorative chroma; product uses black/light zinc surfaces with emerald highlights and translucent glass.
+- **Tokens:** landing ground `#0A0A0A`, panel `#0F0F11`, muted `#71717A`, indigo `#6366F1`, hairline `rgba(255,255,255,.10)`; product continues its independent light/dark glass tokens.
+- **Typography:** Inter for display/body and JetBrains Mono for landing furniture; the product route retains Inter plus the existing editorial display treatment. Two families are used per route at most.
+- **Layout paradigm:** landing uses full-screen hero, explicit 4/2/1 engine grid, spectrum field, stat row, FAQ, and centered close; product uses immersive hero, glass stat stack, feature grid, productivity block, and evidence plates.
+- **Signature elements:** additive canvas ribbons and spectrum marker on landing; repository logo, glass stat cards, and recorded HavenOS UI on product.
+- **Interaction philosophy:** landing makes the mechanism legible through live canvas surfaces; product uses direct section links, theme toggle, accordions, and a verified APK action.
+- **Animation:** landing intro/ribbons/engine/spectrum are cancelled or made static under `prefers-reduced-motion`; product keeps restrained hover/reveal motion and honors the same preference.
 - **Brand essence:** A configurable Android home that helps you see less, choose more. Personality: quiet, exact, grounded.
 - **Brand voice:** direct, second person, specific. Example lines: “Keep the home you built. Keep a way back.” / “Choose the controls you want to notice.”
 - **Wordmark and logo:** wordmark in a compact lower-case lockup with the offset-bar mark; no invented app icon asset.
-- **Signature brand color:** mineral violet `#7B4DFF`.
+- **Signature brand color:** landing indigo `#6366F1`; product emerald remains a separate route accent.
 
 ## Scope
 
 ### Routes
 
-1. `/` — **HavenOS — The calm launcher**
-2. `/privacy` — **HavenOS Privacy — Permissions in plain words**
-3. `/faq` — **HavenOS FAQ — Answers before you install**
+1. `/` — **HavenOS — A home screen with a way back**
+2. `/product` — **HavenOS — The calm launcher**
+3. `/privacy` — **HavenOS Privacy — Permissions in plain words**
+4. `/faq` — **HavenOS FAQ — Answers before you install**
 
-The homepage contains the full narrative and anchors to: `#calm-control`, `#home`, `#today-calm`, `#drawer-search`, `#gestures`, `#style`, `#safety-net`, `#permissions`, and `#faq`.
+The landing page contains `#engine`, `#spectrum`, `#proof`, and `#questions`; the product page contains the feature anchors `#home`, `#calm-control`, `#today-calm`, `#drawer-search`, `#gestures`, `#style`, `#safety-net`, `#permissions`, and `#faq`.
 
 ### Product facts to communicate
 
@@ -52,9 +53,17 @@ The repository now verifies the download URL as `https://github.com/Voidwalker-2
 
 ## Content architecture
 
-### Homepage narrative
+### Landing narrative (`/`)
 
-1. Header: HavenOS wordmark, section links, theme toggle, `Download APK` CTA marked `[TODO]` until a URL exists.
+1. Intro stage: one short lowercase line that clears after roughly two seconds.
+2. Full-viewport generated ribbon hero with bottom-aligned headline, metadata, lede, and two CTAs.
+3. Four explicit engine tiles with distinct visual mini-animations.
+4. Spectrum field with selected search band and typed-sum readout.
+5. Four product facts, native FAQ rows, centered close, and mono footer.
+
+### Product narrative (`/product`)
+
+1. Header: HavenOS wordmark, section links, theme toggle, verified `Download APK` CTA.
 2. Hero: sharp headline, one-line subhead, one primary download CTA, and the real home-screen screenshot presented as a tilted product plate.
 3. Calm vs full control: two-state comparison with the supplied home/edit/settings evidence.
 4. Home and dock: density, snap-to-grid, folders, stacks, widgets, dock behavior, lock layout.

@@ -4,7 +4,8 @@
 
 | Route | Page name | Purpose |
 |---|---|---|
-| `/` | **HavenOS — The calm launcher** | Main marketing narrative: product promise, visual proof, feature themes, safety net, permissions, FAQ preview, and download CTA. |
+| `/` | **HavenOS — A home screen with a way back** | Generated-light landing page: product promise, animated surfaces, search spectrum, facts, FAQ, and entry CTA. |
+| `/product` | **HavenOS — The calm launcher** | Glass/depth product narrative: product promise, video proof, feature themes, safety net, permissions, FAQ preview, and download CTA. |
 | `/privacy` | **HavenOS Privacy — Permissions in plain words** | Focused explanation of why HavenOS asks for each Android permission and which items are optional. |
 | `/faq` | **HavenOS FAQ — Answers before you install** | Direct answers to product, setup, permissions, feature, and unknown-fact questions. |
 
@@ -24,9 +25,10 @@
 
 ## Global navigation names
 
-- **Product** → `/#home`
-- **Calm vs control** → `/#calm-control`
-- **Safety net** → `/#safety-net`
+- **Landing** → `/`
+- **Product** → `/product#home`
+- **Calm vs control** → `/product#calm-control`
+- **Safety net** → `/product#safety-net`
 - **Permissions** → `/privacy`
 - **FAQ** → `/faq`
 - **Download APK** → `https://github.com/Voidwalker-28/HavenOS/releases/download/v1.0/HavenOS-vc10.apk`
@@ -34,5 +36,5 @@
 ## SEO / crawler files
 
 - `/manus-routes.json` — route manifest for the managed preview/runtime.
-- `/sitemap.xml` — public XML sitemap for the three pages.
+- `/sitemap.xml` — public XML sitemap for the four public routes.
 - `/robots.txt` — permits public crawling and points to the sitemap.
