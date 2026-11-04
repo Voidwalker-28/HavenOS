@@ -29,12 +29,16 @@ configure, nothing competing for attention.
 
 ### Screenshots
 
-Screenshots will be added here from a real device run. No mockups are
-presented as screenshots.
+Real frames from a Redmi Pad 2 run of the 3.1.1 build (1 November
+2026). No mockups.
 
-| Home (tablet landscape) | Today rail | Library |
-|---|---|---|
-| _coming soon_ | _coming soon_ | _coming soon_ |
+| Home with Today widgets | App library |
+|---|---|
+| ![Home with Today widgets](assets/screenshots/home-today.jpg) | ![App library](assets/screenshots/app-library.jpg) |
+
+| Milo and its quick-action bubble | Look and accent settings |
+|---|---|
+| ![Milo and its quick-action bubble](assets/screenshots/mascot-bubble.jpg) | ![Look and accent settings](assets/screenshots/look-accent.jpg) |
 
 ## Features
 
