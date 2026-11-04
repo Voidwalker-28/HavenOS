@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -20,9 +21,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
@@ -46,10 +44,16 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import app.havenos.launcher.data.SettingsState
+import app.havenos.launcher.ui.glass.HavenDialog
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
+import app.havenos.launcher.ui.glass.HavenMenu
+import app.havenos.launcher.ui.glass.HavenMenuItem
 import app.havenos.launcher.theme.LocalFont
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -269,18 +273,26 @@ fun SpotlightRing(
     ) { content() }
 }
 
-/** "Before" button: while held, the host shows [PreviewSession.openSnapshot]. */
+/** "Before" pill: labeled, with an eye icon; while held, the host shows [PreviewSession.openSnapshot]. */
 @Composable
 fun BeforeHoldButton(
     onHoldChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    // 3.1.1 (item 5): icon-only under 560dp — the Eye alone, with
+    // "Before" as the content description.
+    iconOnly: Boolean = false,
 ) {
     val tokens = LocalShellTokens.current
     Box(
         modifier
             .heightIn(min = 48.dp)
+            .then(if (iconOnly) Modifier.size(48.dp) else Modifier)
             .clip(RoundedCornerShape(ShellRadii.chip))
             .background(tokens.cardSelected)
+            .semantics {
+                contentDescription = if (iconOnly) "Before"
+                else "Hold to see your home before changes"
+            }
             .pointerInput(Unit) {
                 detectTapGestures(
                     onPress = {
@@ -290,14 +302,20 @@ fun BeforeHoldButton(
                     },
                 )
             }
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = if (iconOnly) 0.dp else 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = "Before",
-            style = ShellText.help.copy(fontFamily = LocalFont.current),
-            color = tokens.accent,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            HavenIconImage(HavenIcon.Eye, null, tint = tokens.accent, size = 20.dp)
+            if (!iconOnly) {
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    text = "Before",
+                    style = ShellText.help.copy(fontFamily = LocalFont.current),
+                    color = tokens.accent,
+                )
+            }
+        }
     }
 }
 
@@ -307,21 +325,27 @@ fun ChangesChip(
     count: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    // 3.1.1 (item 5): icon-only under 560dp — the count badge alone
+    // (no words), with "Changes (N)" as the content description.
+    iconOnly: Boolean = false,
 ) {
     val tokens = LocalShellTokens.current
     Box(
         modifier
             .heightIn(min = 48.dp)
+            .then(if (iconOnly) Modifier.size(48.dp) else Modifier)
             .clip(RoundedCornerShape(ShellRadii.chip))
             .background(tokens.cardSelected)
             .clickable { onClick() }
-            .padding(horizontal = 12.dp),
+            .semantics { contentDescription = "Changes ($count)" }
+            .padding(horizontal = if (iconOnly) 0.dp else 12.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = "Changes ($count)",
+            text = if (iconOnly) "$count" else "Changes ($count)",
             style = ShellText.help.copy(fontFamily = LocalFont.current),
             color = tokens.accent,
+            fontWeight = if (iconOnly) FontWeight.Bold else FontWeight.Normal,
         )
     }
 }
@@ -449,74 +473,37 @@ fun ShellResetOverflow(
             .clickable { menuOpen = true },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = "⋮",
-            style = ShellText.rowTitle.copy(
-                fontFamily = LocalFont.current,
+        HavenIconImage(
+            HavenIcon.Menu,
+            "More options",
+            size = 24.dp,
+            tint = tokens.textPrimary,
+        )
+    }
+    HavenMenu(
+        expanded = menuOpen,
+        onDismiss = { menuOpen = false },
+        items = listOf(
+            HavenMenuItem(
+                icon = HavenIcon.Undo,
+                label = "Reset this screen…",
+                destructive = true,
+                onClick = { confirmOpen = true },
             ),
-            color = tokens.textPrimary,
-        )
-    }
-    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-        DropdownMenuItem(
-            text = {
-                Text(
-                    text = "Reset this screen…",
-                    style = ShellText.value.copy(
-                        fontFamily = LocalFont.current,
-                    ),
-                    color = tokens.textPrimary,
-                )
-            },
-            onClick = { menuOpen = false; confirmOpen = true },
-        )
-    }
+        ),
+    )
     if (confirmOpen) {
-        AlertDialog(
-            onDismissRequest = { confirmOpen = false },
-            title = {
-                Text(
-                    text = "Reset this screen",
-                    style = ShellText.rowTitle.copy(
-                        fontFamily = LocalFont.current,
-                    ),
-                    color = tokens.textPrimary,
-                )
+        HavenDialog(
+            onDismiss = { confirmOpen = false },
+            title = "Reset this screen",
+            body = "$affectedCount settings will change.",
+            dismissLabel = "Cancel",
+            confirmLabel = "Reset",
+            onConfirm = {
+                confirmOpen = false
+                scope.launch { onReset() }
             },
-            text = {
-                Text(
-                    text = "$affectedCount settings will change.",
-                    style = ShellText.value.copy(
-                        fontFamily = LocalFont.current,
-                    ),
-                    color = tokens.textSecondary,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmOpen = false
-                    scope.launch { onReset() }
-                }) {
-                    Text(
-                        text = "Reset",
-                        style = ShellText.help.copy(
-                            fontFamily = LocalFont.current,
-                        ),
-                        color = tokens.danger,
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmOpen = false }) {
-                    Text(
-                        text = "Cancel",
-                        style = ShellText.help.copy(
-                            fontFamily = LocalFont.current,
-                        ),
-                        color = tokens.textSecondary,
-                    )
-                }
-            },
+            danger = true,
         )
     }
 }

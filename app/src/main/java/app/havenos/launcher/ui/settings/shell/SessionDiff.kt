@@ -3,6 +3,8 @@ package app.havenos.launcher.ui.settings.shell
 import app.havenos.launcher.HavenApp
 import app.havenos.launcher.data.Settings
 import app.havenos.launcher.data.SettingsState
+import app.havenos.launcher.ui.glass.accentDisplayName
+import app.havenos.launcher.ui.glass.accentSelectionOf
 
 // ---------------------------------------------------------------------------
 // M6 integration: session helpers moved out of the deleted M5 shell
@@ -106,7 +108,12 @@ private suspend fun commitSnapshot(settings: Settings, draft: SettingsState) {
     settings.setUndoJson(draft.undoJson)
     settings.setLaunchStatsJson(draft.launchStatsJson)
     settings.setSeeded(draft.seeded)
-    settings.setAccent(draft.accentMode, draft.accentArgb)
+    settings.setAccentSelection(
+        accentSelectionOf(
+            draft.accentSource, draft.accentCurated, draft.accentCustomArgb,
+            draft.accentStrength, draft.accentRecents,
+        ),
+    )
     settings.setCornerDp(draft.cornerDp)
     settings.setSurfaceMaterial(draft.surfaceMaterial)
     settings.setSurfaceBlurPct(draft.surfaceBlurPct)
@@ -172,8 +179,9 @@ suspend fun resetNewCategory(app: HavenApp, id: Int) {
     val s = app.settings
     when (id) {
         1 -> {
+            // resetSection(1) already writes the full B7 accent default
+            // (Curated/Ember/Subtle); no separate accent write remains.
             s.resetSection(1)
-            s.setAccent(0, 0)
             s.setSurfaceMaterial(2); s.setSurfaceBlurPct(60); s.setSurfaceNoisePct(0)
             s.setShadowDp(-1); s.setOutlineOn(true)
             s.setFontWeight(0); s.setFontScalePct(100)
@@ -271,7 +279,13 @@ fun sessionDiffFields(
         if (old != new) out += SessionFieldChange(key, oldText, newText)
     }
     diff("Dark mode", snapshot.darkMode, current.darkMode, darkModeName(snapshot.darkMode), darkModeName(current.darkMode))
-    diff("Accent", snapshot.accentMode to snapshot.accentArgb, current.accentMode to current.accentArgb, "${snapshot.accentMode}/${short(snapshot.accentArgb)}", "${current.accentMode}/${short(current.accentArgb)}")
+    diff(
+        "Accent",
+        accentSelectionOf(snapshot.accentSource, snapshot.accentCurated, snapshot.accentCustomArgb, snapshot.accentStrength, snapshot.accentRecents),
+        accentSelectionOf(current.accentSource, current.accentCurated, current.accentCustomArgb, current.accentStrength, current.accentRecents),
+        accentDisplayName(accentSelectionOf(snapshot.accentSource, snapshot.accentCurated, snapshot.accentCustomArgb, snapshot.accentStrength, snapshot.accentRecents)),
+        accentDisplayName(accentSelectionOf(current.accentSource, current.accentCurated, current.accentCustomArgb, current.accentStrength, current.accentRecents)),
+    )
     diff("Material", snapshot.surfaceMaterial, current.surfaceMaterial, short(snapshot.surfaceMaterial), short(current.surfaceMaterial))
     diff("Corner radius", snapshot.cornerDp, current.cornerDp, short(snapshot.cornerDp), short(current.cornerDp))
     diff("Font", snapshot.fontChoice, current.fontChoice, short(snapshot.fontChoice), short(current.fontChoice))
@@ -335,7 +349,14 @@ fun sessionDiffFields(
 /** One field's revert: write that field back to its snapshot value. */
 private fun revertFor(key: String, snapshot: SettingsState, settings: Settings): suspend () -> Unit = when (key) {
     "Dark mode" -> suspend { settings.setDarkMode(snapshot.darkMode) }
-    "Accent" -> suspend { settings.setAccent(snapshot.accentMode, snapshot.accentArgb) }
+    "Accent" -> suspend {
+        settings.setAccentSelection(
+            accentSelectionOf(
+                snapshot.accentSource, snapshot.accentCurated, snapshot.accentCustomArgb,
+                snapshot.accentStrength, snapshot.accentRecents,
+            ),
+        )
+    }
     "Material" -> suspend { settings.setSurfaceMaterial(snapshot.surfaceMaterial) }
     "Corner radius" -> suspend { settings.setCornerDp(snapshot.cornerDp) }
     "Font" -> suspend { settings.setFontChoice(snapshot.fontChoice) }

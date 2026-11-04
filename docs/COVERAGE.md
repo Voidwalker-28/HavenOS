@@ -485,3 +485,1394 @@ for the vc11 build are owed.
 | Search rows | done | Currency conversion row + Dictionary row in the Library/search results, each gated by its API toggle |
 | Settings → APIs hub | done | Seventh hub (hub screen + search entries); its panel Reset restores the 7 toggles only |
 | Workers | done | One unique periodic WorkManager job per API (quote 24h, scores 15min, crypto 30min, APOD 24h, GitHub 1h, currency 24h; dictionary has none — on-demand only), network-connected constraint, no charging/idle constraints |
+
+## Coordination fix (2026-10-29, 3.0/vc12 tree — verification build only, NOT a release)
+
+Implements the seven-section coordination design document (§7 steps in
+order). No version bump (stays 3.0/vc12); no publish; no GitHub touch.
+Backup: `~/workspace/havenos-pre-coord-fix-2026-10-29/` (pre-fix tree).
+
+### Step 1 — Profile scope in coordinator
+- `commit` gains `targetProfiles` (default: current window class);
+  `LayoutProfiles` gains `dirty: Set<WindowClass>` with JSON round-trip
+  (old backup JSON without it reads as empty).
+- Dirty reading (doc-literal would be vacuous for full-family tab
+  commits, so implemented coherently): a grid commit's targets are its
+  grid scope — portrait tab {COMPACT, MEDIUM}, landscape tab
+  {EXPANDED_LANDSCAPE, MEDIUM}. The current profile's placements are
+  rewritten from the live layout; other in-scope profiles are marked
+  dirty for switch-time repair; non-targets untouched. Only grid
+  commits set dirty flags; drag/dock/Today/install/uninstall/sync
+  never do. Switch-time repair reflows (never re-derives) and clears
+  the flag; a failed gate keeps it for retry. `deriveProfile` verbatim.
+
+### Step 2 — Install/uninstall + Sync through commit(ALL)
+- Sealed `LayoutMutation` (DragDrop, Resize, PlaceItem, RemoveItem,
+  GridChange, DockPositionChange, TodayToggle, AppLifecycle,
+  SyncFromCurrent, Restore) + `commitMutation`: lock gate (user
+  mutations only — lifecycle/restore bypass it), drag gate (user
+  mutations only — a dropped uninstall would leave a dead icon with
+  no retry broadcast), apply-to-copy, validate + reflow safety net,
+  one Room transaction, undo push. Removals never undo.
+- New `withAppInstalled`: canonical ALWAYS gains the entry; placement
+  ONLY to the current profile and ONLY when auto-add is on. Old
+  `withAppAdded` (every profile) kept verbatim for its tests.
+- App-listing receiver now routes add/remove/disable/enable through
+  the coordinator; profile ids collected in both bare and `app:`
+  forms. Deleted: `profilesWithAppAdded`/`profilesWithAppRemoved`/old
+  `applySync(source, …)` (zero callers before deletion).
+- Known scope fact: before this fix the profile system was dormant
+  for rendering (host renders Room items directly; profiles had no
+  writers/readers except Backup). Commit now writes profiles, but
+  host render-from-profiles is NOT in §7 — follow-up, not silently
+  dropped. Host drag/drop/dock/remove/hide write sites are likewise
+  NOT routed (the §7 routing list covers install/Sync + grid/dock/
+  Today only).
+
+### Step 3 — Grid/density, dock position, Today toggle through commit
+- Picker Apply → `GridChange` (writes override, existing semantics);
+  Follow-density → `GridChange(followDensity = true)` (clears the
+  override; the flag is defaulted so the doc's 3-arg form works).
+  Dock position → `DockPositionChange` with NO gridCells (dock never
+  changes `hostGridCells`, so reflow is a no-op by the doc's rule).
+  Today → `TodayToggle` (placements untouched).
+- Rejection plumbing: hub code ignores TxResult, so the public
+  `commitMutation` wrapper raises `rejectionToast`, collected by the
+  host toast — a locked-layout hub change no longer fails silently.
+- Host reflow effect stays as a safety net only (still converges
+  density-slider writes, see blocker below).
+- BLOCKED, exact reason: density-level routing (Drawer/QuickPanel
+  sliders) is NOT routed — the doc's sealed mutation list contains no
+  DensityChange, and per-tick slider writes cannot each be a commit +
+  undo entry. Inventing a mutation would violate "no new concepts".
+  The hub's Follow-density action IS routed. SessionDiff
+  settings-restores left direct (settings-domain restores).
+- Known race (benign, device check watches it): a grid commit writes
+  the override (settings flow emit) then the layout; the host effect
+  may interleave first with the same deterministic plan, so results
+  converge but one extra undo entry is possible.
+
+### Step 4 — Settings UI batch (no state-model change)
+- Look hub: three MaterialCards → one `Material` HubSegmented (same
+  `setSurfaceMaterial` calls; blur-fallback note as the row's info);
+  entire Wallpaper section → one collapsed `HubMore(title =
+  "Wallpaper")` (inner "More options" block unchanged inside).
+  `HubSegmented` gains a defaulted `value` param; `HubMore` a
+  defaulted `title` param.
+- Hub screen: Changes banner under the needs-attention banner
+  (`{N} changes · Review · Revert session`, existing actions);
+  footer count row deleted (title-bar ChangesChip already shows it).
+- Grid overflow: one shared `MoveDestinationsText` for ghost text
+  and confirm dialog — count line never collapsed; entries
+  `page {pos} ({count})` in page order (pos = grid page + 1, or + 2
+  while Today occupies pager position 1); ≤8 all shown, >8 first 8 +
+  `+{M} more` expanding inline; dots cap (12) unchanged.
+- Panel layering: edit toolbar gated on `!showSettingsPanel` AND a
+  panel-open effect exits edit mode under Done semantics
+  (auto-snapshot, then panel opens); phone scrim flat 40% (replaces
+  adaptive 0.12–0.42); all 7 hub top rows removed — the panel title
+  bar owns Back/Changes/Close (HubTopBar, DsTopBar,
+  PrivacyHubHeader deleted; `onBack` params kept for the registry
+  signature). This overrides the frozen-visuals rule on this one
+  point: the newer design doc wins on conflict.
+- Accent through `LocalDraftLayer`: selection writes draft only;
+  Accent row value shows `Previewing` while draft differs; hero
+  accent circle gains a dashed outline; panel close commits in one
+  silent `setAccent`. Known interaction: the draft is one shared
+  SettingsState copy — a grid Apply/Cancel or wallpaper commit that
+  discards the draft also drops an accent preview, and a settings
+  restore running while a draft is open can have its accent change
+  overwritten by a stale draft commit on close (rare; documented,
+  not redesigned — the doc specifies the shared layer).
+
+### Step 5 — Durable undo (Room 5→6, additive only)
+- Migration 5→6 (pinned by `migration56Sql()`): `undo_entries`
+  (seq AUTOINCREMENT PK, direction, layoutJson, profilesJson),
+  `profile_dirty` (windowClass PK), `api_cache.consecutiveFailures`
+  INTEGER NOT NULL DEFAULT 0. Fresh installs get v6 from entities;
+  v5 installs upgrade with layouts/profiles/snapshots/API cache
+  untouched. No DDL+DML mix, no backfill (new tables start empty).
+- `UndoFrame(layout, profiles)`; `UndoStack` generalized to frames
+  (50-level FIFO, push clears redo, + `restore()` for rehydration).
+  Full snapshot format: `snapshotJson` gains defaulted dock/hidden/
+  todayCards/recents; `parseFullSnapshot` defaults missing keys to
+  current (old snapshots restore layout-only, as before).
+- Memory stack is authoritative in-session; Room is the restart
+  backup. Commit pushes ride the layout transaction; host pushes
+  capture synchronously then persist under a mutex (single order);
+  undo/redo apply frame + mirror the stack move. Restart rehydrates
+  stacks from rows (blank rows skipped); depth on restart is a
+  prefix of the session's (a persist in flight at death is lost,
+  never corrupt). Tail-order caveat: a commit insert racing a host
+  push persist can reorder the backup's tail only — never live
+  layout or in-session undo.
+- Host rewired: `EditUndoStack` deleted; toolbar reads coordinator
+  `undoDepth`/`redoDepth` flows; Hide uses generic `doUndo` (frames
+  carry hidden, so the special case is gone); auto-snapshots use
+  the full format; coordinator `restoreSnapshot` applies full state
+  and CLEARS both stacks (doc §3 decision — this also retires the
+  Restore dialog's pre-restore push, which was dead and racy once
+  restore clears). Session-revert (`sessionSnapshot`) stays
+  layout-only by design. NOT changed: DeviceDataHub's
+  `applyLayoutSnapshot` restore/profile/import path (separate legacy
+  path; it does not clear stacks — follow-up, not a silent change).
+
+### Step 6 — Restore previews
+- `snapshotPreviews()`: each record + its item ids in snapshot order
+  (the payload the list previously ignored). Rows render a
+  first-page thumbnail via the existing `PageThumbnail` (widened
+  private → internal, inert tap/drag handlers; NO new renderer).
+  Geometry comes from parsing the record (ids carry no coordinates);
+  labels resolve against the live catalog (known app → live label,
+  unknown → existing package-derived fallback letter, folders →
+  snapshot names). Zero renderable items → counts-only row (never a
+  blank tile). Apply path semantics unchanged (atomic restore);
+  tile taps route to the same apply action (tiles consume presses).
+
+### Step 7 — Worker failure surface
+- `CardStatus` sealed (Fresh/Stale/Expired/EmptyOffline) + pure
+  `cardStatus(api, row, nowMs)`: Fresh age ≤ maxAge, Stale maxAge <
+  age < 2×maxAge, Expired age ≥ 2×maxAge (carries lastUpdatedMs),
+  EmptyOffline row-less. Dictionary exempt by construction
+  (maxAge Long.MAX_VALUE). Age ratio alone drives UI; the counter
+  is diagnostics only.
+- `refreshApi` (single place): success upserts fresh row (counter
+  reset by default); failure keeps payload + timestamp and bumps
+  ONLY `consecutiveFailures` (per row, so cricket/football and
+  repos/events are independent); no row → no bump; toggle-off and
+  no-key gates return before any touch, never counted as failures.
+  Worker UNCHANGED (still returns success on failure; cadences and
+  toggle gating unchanged) — no retry storm.
+- Status line: Fresh → last-updated label; Stale → offline-with-cache
+  line; Expired → `Couldn't refresh — showing {lastUpdatedLabel} ·
+  Retry` (text button in the status line only, calls
+  `refreshApi(api, state)`, rendered only while the toggle is on;
+  in-flight retry shows the refreshing state); null status (initial
+  states) falls back to the old lines. Retry on all 5 Today cards
+  (quote, scores, crypto, APOD, GitHub — GitHub combines both rows:
+  Expired wins with the oldest time, then Stale, then Fresh).
+  Drawer search rows gain `cardStatus` via the flow but their
+  rendering is unchanged (they have no status line to extend).
+
+### Verification (this fix)
+- Mid-build after steps 1–3: BUILD SUCCESSFUL (12m 55s); APK
+  verified (app.havenos.launcher, vc12/3.0, minSdk 26, targetSdk 36,
+  CN=HavenOS cert match). Per-step compile checks after steps 4, 5,
+  6, 7: each BUILD SUCCESSFUL (`:app:compileReleaseKotlin`).
+- Tests written but NOT run (sandbox executor broken, pre-existing;
+  SettingsShellTest has 10 pre-existing compile errors): see
+  UNVERIFIED.md. Final full verification build: BUILD SUCCESSFUL in
+  7m 28s (`build.sh`, 2026-10-29); APK
+  `app/build/outputs/apk/release/app-release.apk`, 2,665,728 bytes,
+  md5 `2a2688ec8c0398749465ca7c4d309722`, aapt vc12/3.0/minSdk 26/
+  targetSdk 36, apksigner CN=HavenOS SHA-256
+  `53bff2a09aedb516a8ee6193234a7aaf5d04ce901fb8931b799191b9845354a8`
+  (keystore match). Verification build only — the delivered
+  `HavenOS-vc12.apk` (2,632,960 bytes, md5
+  `cbe84ad33c307823dfb600419d0e3bc8`) was left untouched. Build log
+  saved as `docs/coord-final-build.log`.
+
+## 3.1 Phase B — Haven Glass + accent system (2026-10-30, 3.0/vc12 tree — verification build only, NOT a release)
+
+Phase B delivers the design system and the Look accent UI. It does NOT
+restyle every hub, the drawer, cards, menus, toolbar, overview, Calm, or
+the island — that is Phase C, which consumes this system. The only
+surfaces changed beyond the system itself are the Look accent section
+and the minimum content swaps the new icon/lint rules forced (emoji
+glyphs become HavenIcon vectors; two hex literals become tokens).
+
+### B1 — One entry point: ui/glass
+
+- `ui/glass/` exposes `Modifier.glass(level)`, all components, and
+  HavenTheme tokens (HavenSpacing, HavenRadii, HavenType, GlassLevel
+  specs, AccentRoles). `LocalAccentRoles` is provided by HavenTheme in
+  `theme/Looks.kt` (the glass module holds the pure token type; the
+  theme holds the provided value — no second HavenTheme composable).
+- `glass()` draws level tint + hairline only. It adds NO new blur
+  mechanism: blur comes from the existing window blur-behind where the
+  host set it (the same Partial-tier mechanism GlassSurface uses).
+  GlassSurface itself is untouched (home is Phase D territory).
+  Depth comes from blur/tint/hairline, never shadows: `glass()` draws
+  no shadow.
+
+### B2 — Materials
+
+- Glass1 (cards/widget frames/grouped lists): dark white 7% + 12%
+  hairline; light black 5% + 10% hairline; card 28dp, grouped-list 20dp.
+- Glass2 (panels/sheets/drawer): dark white 12%, light white 70%,
+  hairline 16%, 28dp top corners for sheets.
+- Glass3 (menus/popovers/dialogs/bubbles): dark white 16%, hairline
+  18%, menu 20dp, dialog 28dp. Glass3-light tint is an INFERENCE
+  (prompt silent): white 85%.
+- Legibility: text-carrying glass sits on ≥40% dark scrim (dark) /
+  60% light scrim (light) for 4.5:1 on any wallpaper.
+- Fallback (Reduce Effects, blur unavailable below API 31 or
+  disabled, frame-time trouble): same layout, no blur, tint alpha +6
+  points, never fully transparent text backgrounds.
+- At most two blurred layers on screen: DOCUMENTED, NOT ENFORCED.
+  No layer counter was built (a new mechanism, out of minimal scope);
+  a third layer becomes a dialog or uses the fallback by convention.
+  Phase G / device check B-15 covers the behaviour.
+
+### B3 — Shape / spacing / type
+
+- Radii: card 28, group 20, control 14, chip full, icon tile 12.
+- Spacing: 4/8/12/16/24/32dp. Row height 56dp min (grows for two
+  lines). Touch targets 48dp.
+- Type: display 56 Light, hero numerals 34 Light, title 28 Regular,
+  section label 12 Medium 0.6sp tracking in accent, row label 16, row
+  value 14 muted, caption 12 muted; line height ~1.35.
+- Labels wrap to two lines before ellipsizing; long-press on an
+  ellipsized label shows the full text in a Glass3 popover.
+- Exception (documented): HavenSegmented labels are maxLines=1 —
+  segments are fixed-height and wrapping would break thumb geometry.
+- Nothing in Settings truncates at font scale 1.0 on tablet; font
+  scale to 1.3 is honored without clipping/overlap (device check).
+
+### B4 — Icons: one outline family, zero emoji
+
+- DEVIATION (honest): the icons are ORIGINAL outline vectors, NOT
+  Material Symbols. The extended set is not a dependency, is not in
+  the Gradle cache, and the build is offline, so no symbol font could
+  be fetched; hand-authoring true Material Symbols paths from memory
+  would be fabrication. Style matches the prompt (24dp viewport,
+  ~1.7 stroke, round caps/joins, stroke Black, transparent fill, tint
+  recolors at call sites).
+- One `HavenIcon` enum maps every hub, row, permission, dock, and
+  menu entry, plus weather kinds and media controls (new in Phase B:
+  MediaPrevious/MediaNext for island skip buttons). Icon tile 36dp,
+  12dp radius, accent-soft background.
+- EVERY in-range emoji/pictograph is removed from the UI, verified by
+  a code-point scan (0 hits in main Kotlin + res values): weather
+  symbols -> WeatherKind + `weatherIcon()` vectors (data/Weather.kt
+  now returns `Pair<String, WeatherKind>`); hub registry emojis ->
+  HavenIcon hub entries; permission glyphs -> HavenIcon permission
+  entries; island play/pause/skip/charging/bell -> vectors; edit
+  toolbar Done/Calm/Settings/snap-tick/selection/dismiss -> vectors;
+  drawer clear, icon-pack tick, wallpaper tick, GitHub star,
+  Today-page sun, music placeholder -> vectors or dropped ticks.
+- Unit tests (written, NOT run — sandbox executor broken):
+  `ui/glass/EmojiScanTest.kt` scans main Kotlin + res values/drawable
+  XML for U+1F300–U+1FAFF, U+2600–U+27BF, U+2B50, U+FE0F and fails
+  listing offenders; `ui/glass/HexLiteralTest.kt` fails on
+  `Color(0x…)` literals outside the token module.
+- LEFT FOR PHASE C (documented, not silent): out-of-range geometric
+  glyphs — edit toolbar ↩↪⊞, snap off-state ○, DevicePermRow ●/○
+  dots and ⓘ help glyph, overlay ▣ in old comments. They are outside
+  the test ranges and belong to the Phase C toolbar/menu restyle.
+- Slightly lossy, documented: mascot emotes FOUND/CELEBRATE were a
+  check mark and are now "!" / "!!" (expressions never coincide with
+  HAPPY/SURPRISED "!"); the at-a-glance weather line is a plain
+  String, so it drops its glyph entirely (label + temperature remain);
+  the wallpaper "Solid ✓"/"Photo ✓" buttons drop the tick (selection
+  already shows by border).
+
+### B5 — Components (each: pressed ripple, focused accent ring, disabled dim + reason)
+
+- GlassCard; GroupedSection (label + rows in ONE Glass1 container,
+  hairline dividers, rows as lambdas so dividers land between them);
+  SettingRow variants (navigation, switch, segmented, slider, value,
+  action, info); HavenSegmented (recessed track dark white 6% / light
+  black 6%, sliding accent-soft thumb, spring, each label drawn once);
+  HavenSwitch (52×32dp, check on thumb when on, accent track on /
+  neutral off); HavenSlider (no −/+ buttons, value bubble while
+  dragging, haptic tick per step, Auto chip where applicable,
+  debounced writes via onCommit on release, as before); HavenBanner
+  (tonal accent-container bg, icon tile, one action, no hardcoded
+  colors); HavenDialog, HavenMenu, HavenSnackbar (Glass3); EmptyState
+  (small mascot pose slot, one-line headline/body, one verb button);
+  Skeleton (shimmer, static under Reduce Motion). Help: 48dp touch
+  target opening a Glass3 popover (HavenHelp, delivered standalone;
+  Phase C wires it into every help button).
+
+### B6 — Motion
+
+- App open 320ms, folders 280ms, dock 240ms stay; hub transitions
+  220ms shared axis; one spring for switch/segmented; haptic ticks on
+  switch/step/snap. `havenDurationMs` precedence (B6 + A8 + §0
+  "Reduce Motion always wins"): Reduce Motion -> 100ms fade; else
+  Motion Off -> instant; else scaled via speedDuration. Thumb springs
+  snap under Reduce Motion or Off (a thumb has no fade target).
+
+### B7 — Accent system
+
+- Sources as a segmented choice in Look -> Accent: Wallpaper
+  (WallpaperManager.getWallpaperColors, API 27+, suggestion chip
+  "Match wallpaper" only, NEVER auto-applied), System (Material You
+  dynamic color, Android 12+, hidden below API 31), Curated (12 muted
+  colors, prompt starting values + names kept: Ember #F0A35E, Clay
+  #D98C7A, Rose #E58AA6, Orchid #C490E4, Iris #9B8CFF, Cobalt
+  #6FA0FF, Sky #7CC4F2, Lagoon #5CCBC0, Sage #8FC9A0, Moss #B5CF7A,
+  Sand #E3CFA0, Mono #E8E8EA), Custom (hue strip +
+  lightness/saturation square in HSL, live preview on the Look hero,
+  "Adjusted for readability" note when clamped, up to six recents,
+  eyedropper sampling the wallpaper preview, hex entry under
+  Advanced).
+- One seed -> all roles via one function `accentRolesFor`
+  (accent, onAccent, accentContainer with strength alpha,
+  accentOutline; dark + light). No Material Color Utilities
+  dependency (not present, offline): perceptual tone mapping +
+  contrast clamp. Components read only these roles. Contrast enforced
+  in code: accent text on glass ≥4.5:1, icons/borders ≥3:1, onAccent
+  on accent ≥4.5:1; failing seeds clamped, never rejected.
+- Strength Subtle/Balanced/Vivid (default Subtle; container alpha
+  ~10%/18%/30%). Accent marks state + small section labels only,
+  never fills large areas by default.
+- Storage is DataStore, NOT a Room migration (migration-skill
+  discipline applied: additive new preference keys, pure mapping,
+  old keys kept for backup round-trip, never dropped). Load rule: new
+  key present -> read new keys; else old keys present ->
+  `migrateAccent(oldMode, oldArgb)`; else fresh install ->
+  Curated/Ember. Old-key compat writes in the new setter (system maps
+  to mode 1 / argb 0; new keys authoritative).
+- Migration mapping (old 8 swatches -> nearest curated by redmean RGB
+  distance, pinned in tests): blue -> Cobalt, teal -> Lagoon, purple
+  -> Iris, pink -> Clay, amber -> Ember, green -> Lagoon, rust ->
+  Clay, slate -> Clay. Mode 0 -> DEFAULT (visible accent unchanged);
+  mode 1 + argb 0 -> DEFAULT; mode 2 + nonzero -> CUSTOM with colour
+  kept + seeded into recents; mode 3 -> WALLPAPER (stored argb was
+  never rendered, nothing visible to preserve).
+- Changes list shows names (e.g. "Accent: Iris to Ember"), never raw
+  ints (`accentDisplayName`). Backup gains the five new accent fields
+  (unconditional write, `has()`-guarded read; old backups unaffected).
+- DEFAULT is a legacy-only display: the source segmented shows
+  "Default" only while the stored selection is the migrated default;
+  any other pick leaves it behind (it was never a real choice, just
+  the absence of one).
+- Eyedropper scope (honest): samples the SYSTEM wallpaper's reported
+  colours (WallpaperManager) as pickable chips. No bitmap sampling
+  exists and no HavenOS-wallpaper palette extraction exists, so
+  HavenOS wallpapers are not sampled.
+- Wallpaper seed refresh: re-read when the source or the
+  HavenOS-wallpaper settings change; a system-wallpaper change while
+  Wallpaper is already selected picks up on next launch (no
+  wallpaper-change listener exists).
+- Tests (written, NOT run): `ui/glass/AccentTokensTest.kt`
+  (every curated color passes accent ≥4.5 + outline ≥3.0 + onAccent
+  ≥4.5 in dark AND light; determinism; strength alphas; Sand-light
+  clamps; Cobalt-dark needs no clamp; migration incl. the 8 pinned
+  swatch mappings; display names; recents round-trip + cap 6; HSV
+  round-trip within 1 per channel), `ui/glass/GlassTokensTest.kt`
+  (tint/hairline alphas, fallback 0.06, scrims, radii, spacing).
+
+### Purple Default launcher card — FIXED in Phase B (not grandfathered)
+
+- The card was NOT a hex literal at all: HavenTheme never set
+  primaryContainer/onPrimaryContainer/secondary/tertiary, so they
+  fell back to Material3 baseline purple. HavenTheme now sets every
+  container slot from accent roles (primary = roles.accent, onPrimary
+  = roles.onAccent, primaryContainer = roles.accentContainer,
+  onPrimaryContainer = palette.onSurface, secondary/tertiary +
+  containers = accent roles). This fixes all four sites at once
+  (DeviceDataHub card, DrawerSearchHub selected colour,
+  GesturesMotionHub background, PageOverview background).
+
+### Hex-literal fixes in Phase B
+
+- Home.kt red badges (2x `Color(0xFFE53935)`) -> the HomeColors
+  badge token (dark-aware: light red / dark light-red).
+- Widgets.kt flip-tile `Color(0xFF17181C)` -> named token
+  `FlipTileBackground` in HomeTokens.kt (allowlisted Tokens file).
+- Wallpaper data tables (data/Wallpaper.kt) and LookHub wallpaper
+  swatch lists stay as data, not composable literals — out of the
+  lint test's scope by design (Phase C may tokenize them).
+- SettingsComponents.kt hex-parse arithmetic `(0xFF000000L or
+  parsed)` is not a `Color(0x…)` literal and is untouched.
+
+### Verification (Phase B)
+
+- Compile after accent wiring: BUILD SUCCESSFUL in 11m 11s
+  (`./build.sh compile`) — after repairing the pre-compaction glass
+  files, which had never been compiled (see PHASE-B.md: wrong Dialog
+  import, Int-vs-Color roles, `cubicTo` vs PathBuilder `curveTo`,
+  HavenIcon function/enum name collision renamed to
+  HavenIconImage, BoxWithConstraintsScope maxWidth leak,
+  DARK_GLASS_BG Long literal).
+- Compile after emoji swaps: BUILD SUCCESSFUL in 11m 33s (after
+  fixing 8 missing layout imports). Final full verification build:
+  BUILD SUCCESSFUL in 34s (`build.sh`); APK
+  `app/build/outputs/apk/release/app-release.apk`, 2,714,872 bytes,
+  md5 `d17d18d696fc6acf83778cf21d5147eb`, aapt vc12/3.0/minSdk 26/
+  targetSdk 36, apksigner CN=HavenOS SHA-256
+  `53bff2a09aedb516a8ee6193234a7aaf5d04ce901fb8931b799191b9845354a8`
+  (keystore match). Verification build only — NOT delivered anywhere.
+  Full per-step record: `docs/3.1-phase-reports/PHASE-B.md`.
+- Tests written but NOT run (sandbox executor broken, pre-existing;
+  SettingsShellTest has 10 pre-existing compile errors): see
+  UNVERIFIED.md. Final full verification build: see PHASE-B.md.
+- No dependency added. No Room migration in Phase B. Signing,
+  version (3.0/vc12), and `~/workspace/havenos-github/` untouched.
+  Nothing published or uploaded.
+
+## 3.1 Phase C — Haven Glass on every non-home surface (2026-10-30, 3.0/vc12 tree — verification build only, NOT a release)
+
+Phase C applies the Phase B system to Settings, drawer/library/search,
+Today online cards, menus/dialogs/snackbars, the edit toolbar +
+context bar, page overview / widget picker / folders / page indicator,
+Calm, and the island, in C1–C8 order. No behavior, ranking, source,
+toggle, priority, or visibility rule changed except where noted below
+(one genuine bug fix: the quick-customize Widgets entry). Per-part
+verification builds ran green after C1, C2, C3, C4, C5, C6, and C7+C8;
+the final build covers all of Phase C including the glyph cleanup.
+
+### C1 — Settings
+
+- Panel: legibility scrim + Glass2 tint + hairline (bare Glass2 tint
+  alone is not legible over the live home without window blur, so the
+  Phase B §B2 scrim rule is applied). Material setting no longer
+  changes the panel surface; it still drives home glass tiers.
+- Rail 260dp tablet, rows 48dp, 24dp outline icon in icon tile;
+  selected row = accent-soft pill with accent icon + label; labels
+  wrap to two lines, never truncate. Title bar: back chevron vector +
+  one 28sp title; crumb only at depth ≥3 (already true from Phase A
+  A8, so no repeated "Settings › Settings" crumb). Before = Eye icon
+  + "Before" pill ("Hold to see your home before changes" as its
+  TalkBack description); Changes (N) second pill; Close stays.
+- Hub screen: filled glass search field (copy unchanged);
+  needs-attention banners as HavenBanner; hero = MiniLookPreview, a
+  tokens-only live miniature (mini 3×2 grid in the current icon
+  shape with one accent tile, dock pill in accentContainer, mode ·
+  material · grid line) — no fallback to the Minimal card was needed.
+  Quick tune = one grouped section (Icon size, Grid incl. both-
+  orientations write, Mode, Dock position, Labels); Quick tune Mode
+  gained a System option (4 options) because HavenSegmented always
+  shows a selection and the old no-selection state for System mode
+  would have lied. Hub list = one grouped section ("All settings")
+  with HavenNavRow per hub (icon tile, title, live summary, chevron).
+- Shared hub rows restyled (HubRow/HubSwitchRow/HubSegmented/
+  HubSliderRow/HubMore/HubHexDialog); ShellRow/ShellSwitchRow/
+  ShellSegmentedControl/ShellExpander/ShellSkeletonRow restyled;
+  help popovers are HavenHelp everywhere (Privacy/DeviceData inline
+  help expansions converted to popovers, same help text).
+- Look hub: accent Source + curated swatch grid (names under
+  swatches, selected ring), strength, mode, material, label mode,
+  icon shape previews, wallpaper source/style — all present per
+  Phase B; only the shared-row restyle applied.
+- Home and Dock: Columns + Rows steppers added (48dp Minus/Plus
+  vector buttons, coerced 3..12); Follow-density button can never
+  wrap letter-by-letter (horizontal scroll + 148dp minimum width +
+  no-wrap label). Grid-shrink preview = its own grouped section
+  ("Grid change preview") with the dots row, a one-sentence move
+  summary, and the expandable destination list (>8 only). Density
+  itself is a 0..100 slider, not chips — the C1 density item is the
+  Follows-density control. Shrink-confirm and follow-density
+  dialogs are Glass3 custom dialogs matching the C4 anatomy
+  (HavenDialog cannot host expandable lists).
+- APIs: each toggle row carries a status line (Off / Needs key /
+  Updated HH:MM / Offline / Busy / Couldn't load, from A2 classes +
+  diagnostics); key fields (CoinGecko, NASA, GitHub username) in a
+  grouped section with Paste/Show/Hide + validation (GitHub
+  username rule: alphanumerics + hyphens, ≤39 chars, no leading/
+  trailing hyphen). Toggles keep their ShellSwitchRow cards.
+- Gestures and Motion: device diagram already token-only (no
+  hardcoded purple found); toggles are HavenSwitch; Test buttons
+  still fire the real dispatcher.
+- Device and Data: permission rows with icon tile, status chip
+  (Allowed/Not allowed), Manage; default-launcher banner as
+  HavenBanner; Diagnostics keeps the A2 rows. The A13 restore row
+  lives in Gestures and Motion, not here, so nothing was added.
+- Privacy: restyled only. The AI Privacy Ledger entry was NOT built
+  (Phase F scope, per prompt).
+- Mascot hub: chrome restyled only; preview box + rows come in
+  Phase E.
+- Hub loading/empty/error states: DeviceDataHub has the import error
+  dialog + diagnostics empty text; ApiHub degrades to missing status
+  lines when diagnostics fail; SettingsPanel has the "Screen not
+  available" state. Other hubs read local SettingsState/DataStore
+  (always present, synchronous defaults) — no missing-data path
+  exists, so no state was invented.
+- Search results use the same rows + "No settings match" empty state.
+
+### C2 — Drawer, Library, Search
+
+- Sheet: scrim + Glass2 tint layered directly (no glass() border —
+  the sheet is edge-to-edge). IME insets: search field stays
+  visible, results resize, nothing overlaps. Sticky list-header wash
+  deliberately left unchanged (a GLASS1 tint would not hide scrolling
+  content under a sticky header).
+- One compact toolbar row: HavenSegmented (All/Categories/List) +
+  48dp sort button (cycles A–Z/Most used/Recent, same logic) + 48dp
+  menu button (the pre-existing drawer-settings affordance, not a
+  new dropdown). The custom LibrarySegmentedControl is deleted.
+- Search field = Glass2 field (Search vector icon, Clear button);
+  keyboard Search action already ran the search and is unchanged.
+  A-Z rail keeps its 48dp hit area; the letter bubble is Glass3.
+- Results grouped under section labels with icon tiles + match
+  highlighting (new pure `matchSpans` in LibrarySearch.kt, kept
+  framework-free for tests). Settings/contact rows keep text-only
+  rows (they have no icons to tile); app rows carry the tiles +
+  highlighting. Ranking/sources/toggles unchanged.
+- Empty state: SAD MascotFigure 64dp + "No matches" + the same note
+  copy; the Web fallback section below still renders.
+- CategoriesView selection glyphs are RadioOn/RadioOff vectors.
+
+### C3 — Today online cards
+
+- One anatomy inside the existing frame: the frame KEEPS
+  GlassSurface (Today is a home surface; GlassSurface is the
+  sanctioned home blur mechanism and tint-only glass() would lose
+  blur over wallpaper). Header = small accent label (no card has a
+  header icon or overflow actions, so no fake slots were invented);
+  footer = "Updated HH:MM · Source" on success paths only (A2 error/
+  offline/empty wording untouched). Skeleton while loading; empty/
+  offline/error states use a static SAD MascotFigure 48dp (E4 poses
+  may refine it later).
+- Scores: Cricket/Football HavenSegmented, A1 rows, at most 4 +
+  Show more/Show less. Quote 18sp regular + author caption.
+  APOD: rounded thumbnail, title, Set-as-HavenOS-wallpaper
+  (HavenOS wallpapers only, as before). Crypto: symbol, price, 24h
+  change with arrow icon + sign, never colour alone. GitHub: repos
+  + events with skeleton/empty branches, combined status unchanged.
+- Currency/Dictionary are NOT Today cards (they belong to the
+  search worker) — C3's "same anatomy" does not apply to them; their
+  presentation follows the C2 search sections. Card order unchanged
+  (quote, scores, crypto, APOD, GitHub). Toggle gating unchanged.
+
+### C4 — Menus, dialogs, bubbles
+
+- New shared pieces in ui/glass: HavenGlassDialog (Glass3 shell for
+  field/list/row bodies HavenDialog cannot host) +
+  HavenDialogFilledButton (accent, or danger red, optional enabled)
+  + HavenMenuRow (48dp, 20dp icon, destructive = error tint + text).
+  HavenMenu itself is unchanged (its container is palette.surface,
+  the sanctioned Phase B component, not glass tint).
+- Converted: all Settings dialogs (Gestures ×4, DrawerSearch ×2,
+  HomeDock Weather, DeviceData ×4, ShellColorPickerDialog, Dialogs
+  TextFieldDialog), drawer Library menu, home dock menu, PagedHome
+  icon menu, CategoriesView ×2, WidgetReal2 Weather city dialog,
+  Widgets ×5 (Countdown, New task, Note, Gallery photo, Edit stack),
+  Home.kt confirmations (Cannot delete page, Remove from home,
+  Move to page, Restore layout, Reset page, At-a-glance options,
+  Resize, Icon picker), PreviewAids reset overflow menu (HavenMenu)
+  + reset confirm (HavenDialog, danger), EditMode Calm editor
+  (HavenGlassDialog) + EditUndoSnackbar (HavenSnackbar), SettingsPanel
+  both snackbar hosts (HavenSnackbar with Undo action).
+- Danger tint only for permanent/destructive actions (Uninstall,
+  Remove-from-home dialog, Reset page, Delete page, Reset-this-
+  screen). Undoable removals (Remove from home/dock menus, Hide
+  app) are NOT danger-tinted. DatePickerDialog (platform date
+  picker) is not a Haven dialog candidate and stays.
+- BUG FIX (behavior, not styling): the quick-customize bar's
+  WIDGET_SHEET branch was a lambda literal as a statement-when
+  branch, which did nothing — tapping Widgets never opened the
+  sheet. Fixed to `showWidgetSheet = true`.
+
+### C5 — Edit toolbar + context bar
+
+- 56dp toolbar, reserved space, every action kept. GlassSurface pill
+  kept as the blur mechanism (tint-only glass() would lose blur over
+  the home); Glass3 styling = icon + label buttons, accent-soft pill
+  for the active tool (Snap), hairline dividers between Left
+  (Undo/Redo/Snap), Center (Add/Pages/Wallpaper/Look/Calm/Settings),
+  and Right (Done/overflow) groups. All glyphs cleared (↩↪⊞○▦▣◐⋮
+  become Undo/Redo/Grid/Layers/Image/Eye/Menu vectors); Snap's
+  off-state needs no marker — absence of the accent-soft background
+  IS the off state. Add + overflow menus are HavenMenu (same
+  actions, same order).
+- Context bar: same pill, icon + label buttons (Resize Grid, Remove
+  Close, Move to page ChevronRight, Duplicate Plus, Replace Apps,
+  Item settings Gear, Select more Check, Add to dock Layers, Hide
+  Eye, Uninstall Close danger-tinted). Selection ring untouched
+  (2dp accent, PagedHome).
+
+### C6 — Page overview, widget picker, folders, page indicator, app info
+
+- Page overview sheet: scrim + Glass2 tint + hairline, 28dp
+  (replaces the opaque material surface). Thumbnails: Glass1, 20dp
+  (was surfaceVariant 16dp). Delete-page confirm already converted
+  in C4.
+- Widget picker: search field + size chips already existed (field
+  filters own + provider widgets; chips pick from allowedCellSizes/
+  builtinWidgetSizes) — C6 restyles them: sheet container takes the
+  Glass2 tint, search field becomes a filled Glass2 field (Search
+  icon + Clear). Previews unchanged.
+- Folders: FolderSheet already uses GlassSurface (home blur
+  mechanism over the live grid); tint-only glass() would lose blur,
+  so no surface change — recorded as an adaptation, not a gap.
+- Page indicator already matches spec (8dp dots + 24dp accent dash;
+  Today dot stays the Phase B4 sun icon). No change.
+- App info: no HavenOS app-info surface exists — the "App info"
+  action opens the system app-info screen. Nothing to restyle; the
+  menu row itself was converted in C4 (Info icon).
+
+### C7 — Calm
+
+- CalmMode overlay already satisfies the calmer variant (44sp
+  clock, 30sp favorites, white 70% secondary text, black 62% scrim,
+  no accent anywhere) and mutates no home state, so exit restores
+  home exactly. No change to the overlay.
+- CalmEditorScreen restyled: material Switch → HavenSwitch (×2),
+  Slider → HavenSlider (×3, 15-minute snap preserved on From/To,
+  drag bubble shows the formatted value). Accent appears ONLY for
+  schedule state: the Schedule label is accent when enabled, and
+  selected days are accent-soft pills (replacing "[label]"
+  brackets). The ↑/↓ reorder glyphs are functional labels and stay.
+
+### C8 — Island
+
+- Pill keeps GlassSurface (home blur mechanism; GlassSurface takes
+  no per-surface level — its tier comes from theme glass settings).
+  The Glass3 treatment is the hairline divider (Glass3 hairline
+  alpha) between stacked activities in the expanded panel.
+  Behavior, priority, ordering, controls, and visibility rules
+  (off by default; hidden in edit mode, drawer, search, Settings,
+  quick panel, Calm) UNCHANGED. All colors already tokens; no
+  hardcoded color found.
+
+### Phase C BLOCKED / not built (with reasons, never silent)
+
+- NONE of the C1–C8 items is unbuilt, except the two deliberate
+  non-builds above (Privacy AI Ledger = Phase F; app-info surface
+  does not exist). Adaptations (not blocks): panel/overview sheets
+  add a legibility scrim over the Glass2 tint (bare tint is not
+  legible over the live home); Today frames, FolderSheet, toolbar,
+  context bar, and island keep GlassSurface (the home blur
+  mechanism — tint-only glass() would lose blur); HavenMenu's
+  container stays palette.surface (Phase B component as designed).
+- Quick tune Mode System option: this session's deliberate fix (see
+  C1 above); the parent may overrule it back to a 3-option control
+  with a no-selection state.
+- C5 Left/Center/Right group boundaries are this session's reading
+  (the prompt names the groups but does not enumerate them).
+
+### Verification (Phase C)
+
+- Per-part builds: C1 BUILD SUCCESSFUL in 10m 19s; C2 in 11m 12s;
+  C3 in 10m 56s; C4 in 10m 37s (after fixing 3 edit artifacts:
+  orphan @Composable in Drawer, an extra brace in Home At-a-glance,
+  a split doc/annotation in GlassComponents); C5 in 10m 54s; C6 in
+  10m 35s; C7+C8 in 11m 1s. Final build (all of Phase C + glyph
+  cleanup): see PHASE-C.md.
+- Script scans (main Kotlin + res values): emoji 0 hits, hex-literal
+  0 hits (outside the theme/glass/Tokens/Legibility allowlist),
+  rendered leftover glyphs 0 after the final cleanup (the › crumb
+  separator at depth ≥3 is spec'd, not a leftover).
+- Tests written but NOT run (sandbox executor broken, pre-existing;
+  SettingsShellTest has 10 pre-existing compile errors): see
+  UNVERIFIED.md. No dependency added. No Room migration in Phase C.
+  Signing, version (3.0/vc12), and ~/workspace/havenos-github/
+  untouched. Nothing published or uploaded.
+
+## 3.1 Phase D — Small home updates (2026-10-30, 3.0/vc12 tree — verification build only, NOT a release)
+
+Scope is prompt §D only. Everything else on the home is unchanged:
+no home-grid, icon-size, spacing, Today-structure, or glass-look
+file was touched, and the mascot layer was not touched at all.
+
+### D — Home search widget becomes a Glass1 card
+
+- The search widget is `QuickSearchWidget` (ui/WidgetReal.kt, sole
+  caller Widgets.kt ItemKind.QUICK_SEARCH). Its outer frame already
+  was the home Glass1 realization: WidgetFrame is GlassSurface at
+  28dp radius with 16dp padding — the same frame the Today cards
+  use (TodayApiCards ApiCardFrame). What broke the match was the
+  inner pill: a 50-radius Box with flat surface at 55% alpha, plus
+  a "⌕" text glyph as the icon.
+- Change (ui/WidgetReal.kt only, +2 imports, +9/−8 body lines):
+  the inner pill Box is deleted and the row sits directly in the
+  frame, so the widget presents as ONE Glass1 card, not a card
+  containing a pill; the "⌕" glyph is replaced with
+  HavenIconImage(HavenIcon.Search, null, muted, 20dp) per the
+  Phase C drawer-search convention (null description: the adjacent
+  "Search apps, settings…" text already labels the row for
+  TalkBack). Copy, text style, and widget footprint are unchanged.
+- Deliberate non-use of GlassCard: tint-only glass() loses blur
+  over wallpaper (Phase C C3 adaptation), so on a home surface the
+  Phase B Glass1 component is GlassSurface, not GlassCard. A
+  GlassCard here would have made the widget flatter than the Today
+  cards, not matching them.
+- Side effect, behavior-compatible: the tap target is now the whole
+  widget tile (clickable moved to the WidgetFrame modifier); before,
+  the 16dp padding ring around the pill was not tappable. Edit-mode
+  behavior is unchanged (no click in edit mode; the host owns drag).
+
+### D — Dock Search and Library tiles (A7): verified, NOT rebuilt
+
+- Still in place in both dock layouts (ui/Dock.kt): DockActionButton
+  with contentDescription "Search"/"Library", vector drawables
+  ic_search/ic_apps (no glyphs), 48dp target (DOCK_ICON_DP = 48),
+  14dp tile with palette.surface + 1dp glassBorder — the same tile
+  the app icons beside it use (DockAppIcon). No regression from
+  Phase C (Phase C never touched DockActionButton; its icon work
+  was glyph-to-vector replacement, and these buttons already use
+  vectors). No change made. The stale "Phase B's Haven Glass tile
+  replaces these literals" comment in DockActionButton is left
+  untouched — comment-only, out of Phase D scope.
+
+### D — A4, A5, A6 re-verified against the current tree (no regressions)
+
+- A4 (page width + clip): HorizontalPager uses the default Fill
+  page size, so each page equals the pager viewport width (the
+  pager itself fills the ScrollArea, 0.70f beside the Today rail
+  when the rail is on); every page Box is fillMaxSize with
+  clipToBounds (ui/PagedHome.kt), which is what stops the
+  parallax shift from leaking a neighbour sliver at rest. Phase C
+  touched PagedHome only for the icon menu and glyph fixes.
+- A5 (glance rule): `glanceVisible(todayVisible) = !todayVisible`
+  (pure, ui/PagedHome.kt) gates the single GlanceRow, which lives
+  only in the grid-page branch — the Today-page branch has no
+  glance; Home.kt passes the raw toggle (rail and strip both count
+  as Today visible). Each page's glance is inside its clipped page
+  Box, so a neighbour page's glance cannot leak.
+- A6 (rail inset): `railBottomInsetDp` (pure, ui/TodayRail.kt)
+  returns dockHeight + 16 for bottom docks, 0 otherwise; the host
+  passes dockThicknessFor(sizeClass, Bottom) + 16dp for bottom
+  docks (ui/Home.kt) and the rail applies it as bottom padding
+  INSIDE its verticalScroll Column, so the padding extends the
+  scrollable extent and the last card scrolls fully clear. The
+  extra 16dp in the rail's base padding is the rail's standard
+  bottom spacing, present with or without a dock — not an A6
+  deviation.
+
+### D — Mascot overlap: no new overlap created
+
+- Phase D changes no mascot code and no widget footprint: the
+  search widget keeps its cells, size, and position; only its inner
+  surface changes. The ledge-graph guarantee (mascot never sits on
+  an icon or card content) remains Phase E's job; nothing here
+  makes it harder (no new surface, no moved content).
+
+### Phase D BLOCKED / not built (with reasons, never silent)
+
+- NONE of the §D items is unbuilt. No §D change required touching
+  the grid, icon sizes, spacing, Today structure, or glass look,
+  so no piece had to be stopped.
+- No new test file: the change adds no pure logic (a composable
+  layout swap + icon swap inside one existing function), so per
+  Ponytail there is nothing unit-testable to add; the existing
+  A4/A5/A6 pure functions (pageWidth/glanceVisible/
+  railBottomInsetDp) are covered by Phase A tests. Recorded here,
+  not hidden.
+
+### Verification (Phase D)
+
+- Verification build: BUILD SUCCESSFUL in 10m 29s (build.sh);
+  APK app/build/outputs/apk/release/app-release.apk, 2,731,256
+  bytes (same size as the Phase C final by coincidence; md5
+  differs), md5 15460f553aadfa10c1ef522cabbea26f, aapt package
+  app.havenos.launcher versionCode 12 versionName 3.0 minSdk 26
+  targetSdk 36, apksigner CN=HavenOS SHA-256 match (keystore
+  match). Verification build only — NOT delivered anywhere,
+  nothing published or uploaded.
+- Diff review vs the pre-D snapshot: only ui/WidgetReal.kt differs
+  in source (plus build outputs); the diff is exactly the intended
+  change. Security grep over the changed file: no secrets, keys,
+  tokens, or credentials. Glyph scan: no "⌕" remains anywhere in
+  main Kotlin (Phase C's glyph list did not include ⌕, so this
+  widget was the last rendered-glyph holdout).
+- Tests: none added (see above); none run (sandbox executor
+  broken, pre-existing; SettingsShellTest has 10 pre-existing
+  compile errors). No dependency added. No Room migration.
+  Signing, version (3.0/vc12), and ~/workspace/havenos-github/
+  untouched.
+
+## 3.1 Phase E — Pixel mascot rebuild (2026-10-30, 3.0/vc12 tree — verification build only, NOT a release)
+
+### E1 — Pixel art (Milo + Mila, original, 24x24 cells)
+
+- One PNG sheet per character, 41 shared frames, transparent
+  background, 1px dark outline, 8 colours each (outline, base,
+  shade, highlight, eye, blush, accent-detail sentinel, white):
+  app/src/main/res/drawable-nodpi/mascot_milo.png (984x24, 1950
+  bytes; amber base) and mascot_mila.png (984x24, 2067 bytes;
+  pink base). Milo squarer + tuft, Mila rounder + ribbon; no red
+  cap, mustache, overalls, or borrowed assets/sounds. Frame
+  layout: idle 0-3 (blink, 4fps), walk 4-9 (10fps), jump 10-14
+  (rise, apex, fall, land x2, 8fps), sit 15-16, sleep 17-19 (1fps,
+  Z rising), wave 20-23, happy 24-27, surprised 28-29, sad 30-31,
+  think 32-34, point 35-36 (arm + arrow), poof 37-40 (cloud only
+  on 39-40). Face right, mirrored for left.
+- Atlas: app/src/main/res/raw/mascot_frames.json (version 1,
+  cell 24, 41 frames, animations + fps). Loader
+  ui/mascot/MascotSprites.kt palette-swaps the magenta sentinel
+  pixels to the current accent at load, splits the sheet into
+  41 per-frame bitmaps (no per-frame allocation at draw), and
+  draws at integer scale (round(targetPx/24), minimum 2) with
+  FilterQuality.None: Small 56dp / Medium 72dp / Large 96dp.
+  DEFAULT_ATLAS in code is the fallback if the JSON fails to
+  parse. Preview: docs/mascot/preview.png — all 41 frames at 4x
+  on gray AND dark backgrounds, per character. Generator:
+  docs/mascot/gen_sprites.py (Python PIL; PNG production
+  succeeded, so no palette-indexed maps in code were needed).
+- Old vector mascot KEPT behind the same interface behind
+  USE_PIXEL_MASCOT = true in MascotSprites.kt (false restores
+  MascotFigure everywhere: layer, hub preview, empty states).
+  Not deleted until the new art is accepted.
+- HONEST QUALITY NOTE: the agent cannot judge whether the art
+  "looks good". Preview.png is committed for human review; only
+  functional facts are claimed (distinct frames, correct
+  layout, transparency, sentinel presence, verified by pixel
+  counts: 39 body frames carry exactly 1 sentinel pixel each,
+  poof frames 39-40 carry 0, frame 0 opaque pixels Milo 258 /
+  Mila 259, frame 40 opaque pixels 6).
+
+### E2 — Behavior engine (state machine, ledge graph, planner)
+
+- PixelMascotState: Hidden, Spawning, Idle, Walking, Jumping,
+  Falling, Sitting, Sleeping, Reacting, Carried, Pointing,
+  Despawning; transitions as pure canTransitionTo (hide ALWAYS
+  goes through Despawning/poof first, never straight to Hidden
+  from a visible state). ui/mascot/MascotEngine.kt, pure Kotlin,
+  no Compose/Android imports.
+- Ledge graph from the LIVE layout: row tops span the full layer
+  width (cutting yields empty-cell/gutter perches without grid
+  geometry), plus widget tops (from live cell rects), the dock
+  top (bottom dock only), empty rows above/below, and the Today
+  rail top (from the rail container rect). Clearance rule:
+  every segment is cut at overlaps with the band above it as
+  tall as the sprite (strict overlap, so an obstacle bottom
+  exactly at band top does NOT block), parts narrower than the
+  sprite are dropped — the mascot never stands on or covers an
+  icon. Edges: walk along one ledge; jump up to two icon-rows
+  high (rise = 2x live row pitch, gap = 3x live cell width —
+  never a hardcoded dp guess) between ledges whose ranges
+  overlap or are within the gap; drop to any lower ledge with
+  fall animation; no edges across pages while a page is
+  swiping (graph keys on the settled page). Graph covers the
+  visible page + Today rail + dock.
+- Planner: weighted pick (DockTop 3x, EmptyCell/PageBottom 2x,
+  else 1x), walk/jump at 40-60dp/s (seeded Random injected;
+  tripSpeedDpPerSec), dwell 3-12s, sit after 60-120s idle, sleep
+  after 5 min. Route execution is one shared helper
+  (executeRoute) for planner trips and Find guidance, so the
+  two never drift; a Find guide starting mid-trip aborts the
+  planner route at the next step boundary. Graph rebuild keys:
+  live cell rects, layer size, page, home items, dock side +
+  thickness, rail rect, sprite scale, density — which covers
+  every prompt trigger (layout version, rotation/size class,
+  page, density/icon size, dock position, keyboard inset via
+  layer size, Settings open/close via the host gate, edit mode
+  via the host gate). Ledge loss: fall to the nearest valid
+  ledge below, else poof and respawn on the dock top (or the
+  layer-bottom fallback when there is no bottom dock).
+- Visibility: home pages + Today rail only; hide with poof when
+  edit mode, a drag, the drawer, search, Settings (EXCEPT Find
+  pointing), quick panel, Calm, or home not resumed. Host poof
+  handoff: gate closing while visible keeps the layer composed
+  with hideRequested until the 700ms poof finishes, then
+  unmounts; gate reopening mid-poof cancels it. Timers + frame
+  loop pause when home is stopped (LaunchedEffect scope);
+  timers restart (not resume-from-pause) on resume. Reduce
+  Motion / battery saver / roaming-off: park on the dock top
+  in static idle pose, taps still work; planner frozen during
+  poof. Rendering: single overlay layer, touch-transparent
+  except sprite hitbox + bubble; position via animateFloatAsState
+  read ONLY in graphicsLayer lambdas (draw-phase invalidation,
+  never recomposition); frame stepping time-based (timer delays
+  at atlas fps, no per-frame callbacks); no per-frame
+  allocations (frames pre-split at load).
+- Long-press + drag: custom 350ms long-press detection
+  (awaitFirstDown + withTimeoutOrNull; movement before the
+  timeout is NOT our gesture and is ignored, never consumed).
+  Carry: Carried state + haptic tick via LocalHapticFeedback
+  (gated by pressFeedback/hapticStrength, never Vibrator) +
+  drag loop consuming only post-long-press moves; drop snaps
+  to a ledge within 48dp vertically and persists the home
+  spot, else returns to the previous ledge; scope-cancel
+  mid-carry restores the previous ledge (never hangs Carried).
+  Short tap toggles the menu (semantics onClick for TalkBack).
+  Carried renders the jump apex frame (frame 11) as the
+  dangling frame — the atlas has no dedicated dangling frame;
+  the apex (legs tucked) is the closest read.
+
+### E3 — Interaction + Find (flow 14, tracked end to end)
+
+- Bubble: system-font text at 14sp throughout (all bubble texts
+  raised from 13sp), four 48dp chips (Find, Help, Suggest,
+  Dismiss) with labels; bubble anchors to the sprite, flips
+  side to stay on screen, clamps above the IME (WindowInsets.ime
+  bottom), and closes on Close button, back (BackHandler), or
+  touch outside (root pointerInput that never consumes, ignores
+  downs inside the sprite or bubble rects, so home taps still
+  do their home action). Pixel-stepped border is NOT built (see
+  BLOCKED).
+- Find flow states tracked in MascotEngine (Idle, Asking,
+  Searching, Choosing, Navigating, Pointing, Done, Cancelled)
+  with pure nextFindFlowState; the layer sends Start on Find
+  open, QuerySubmitted on submit, Results from the brain's
+  returned FindDecision (MascotResponse gained a findDecision
+  field — default null, no interface change; ScriptedBrain sets
+  it for Act/Choices/NoMatch), CandidatePicked on choice,
+  Arrived on reaching the target, Done on terminal answers.
+  Cancel on touch outside, back, Find switched off mid-flow,
+  or 20s without a transition out of the waiting states
+  (Searching, Choosing — Navigating/Pointing are not timed out:
+  movement and the ring are themselves progress and both end
+  on user action). Mode change is read as Find toggled off;
+  other mode changes (character/size/roaming) do not cancel.
+- Asking field: styled OutlinedTextField with label "Search
+  apps, settings…", Search IME action (submits via action key
+  or Find button), accent focus border + cursor. Resolution
+  reuses the EXISTING search adapter (rankFind, no second
+  index): exact, prefix, synonym, fuzzy, plus widget targets
+  (FindTarget.Widget, matched in the app group so a widget
+  exact match beats a setting prefix match). No-match says
+  "I can't find that." with chips [Search in drawer, Try
+  again]; never guesses.
+- Target kinds: app on visible page → walk/jump to the nearest
+  valid ledge by the icon, face it, Point, spotlight ring; app
+  on another page → pager animates, waits for the settled page
+  (hostCurrentGridPage), graph rebuilds, then walk + Point;
+  app in folder or drawer-only → bubble with Launch chip
+  (never a ring inside a closed folder; folders are not opened
+  unasked); widget → Point at its frame (same guide path, page
+  resolved from homeItems); Settings control → panel opens at
+  the hub with the row deep-linked AND ringed (DeepLinkAnchor
+  now draws a static 2dp accent border on the linked row while
+  the panel is open — this also rings the existing wallpaper
+  and coingecko-key deep links, consistently showing where you
+  landed), mascot stays composed via the pointing exception,
+  Done chip ends Find WITHOUT closing the panel (user closes
+  Settings). Spotlight ring: accent, 2dp, soft pulse (static
+  under Reduce Motion), 40% dim around the target (Canvas with
+  offscreen compositing + BlendMode.Clear hole); any tap on
+  the dim dismisses the guide (that tap is consumed by design;
+  the next tap reaches home).
+- Help map expanded 13 → 18 entries (island, mascot-find,
+  mascot-move, today-cards, offline-cards). controlKeys filled
+  where anchors exist: accent, wallpaper, dock, widgets, grid
+  ("home"), mascot, find, quiet, reset, island. The grid answer
+  text was CORRECTED (old text said "Settings, then Look, and
+  adjust density" — wrong, grid lives in Home and Dock; new
+  text says "Settings, then Home and Dock, and adjust the
+  grid"). Help answers that carry a controlKey ring that row
+  via the Open chip's deep-link. Suggest: ≤1/session, 24h
+  cooldown, quiet hours 22:00-07:00 (existing canNudge gates,
+  unchanged). Teach: one-time tutorials, don't-show-again
+  respected. Dismiss sticks across restarts until re-enabled.
+  Chat stays scripted (ScriptedBrain behind MascotBrain; no
+  model brain in this phase).
+
+### E4 — Mascot hub + empty states
+
+- Hub preview box (120dp) with the animating pixel sprite
+  (vector figure fallback) + Preview button playing
+  idle → walk → jump → wave once (~1500ms each), then resting
+  on idle. Rows: on/off (default off), character, roaming,
+  size, Find, tips Off/Rare/Normal (Settings coercion widened
+  0..1 → 0..2 at read and setter; stored values migrate by
+  widening only, no Room change), quiet hours as rows opening
+  24-hour TimePicker dialogs (minutes now settable; the old
+  hour sliders are gone), Reduce motion, Chat model "Not set
+  up" (unchanged), Reset mascot (renamed from "Reset mascot
+  tips & tutorials"; scope unchanged), Bring back mascot
+  (unchanged). Search entries gained "Reset mascot". Roaming
+  help text corrected (ledges/dock top, not perches/home spot).
+- Static poses as empty-state hosts (static images only, never
+  the roaming overlay): drawer "No matches" → pixel surprised
+  frame 28 (vector SAD fallback); API card offline/error →
+  pixel sad frame 30 (vector SAD fallback, Phase C's pose);
+  Agenda "No events today" → pixel sleeping frame 17
+  (pixel-only addition; the vector path keeps today's
+  figure-less layout). Find no-match bubble → surprised via
+  expression mapping; Find Searching bubble → think pose via
+  expression mapping. General loading skeletons untouched:
+  thinking-as-loading is covered by the Find Searching state,
+  not by replacing skeletons.
+
+### E5 — Tests (written, NOT run — sandbox executor broken)
+
+- MascotEngineTest.kt (NEW, 318 lines): state machine (spawn
+  path, hide-always-poofs, jump/fall cycle, illegal
+  transitions); ledge graph (clearance cut into 2 parts,
+  exact-fit band does not block, narrow/full-block → empty,
+  widget-top + dock segments survive); segment derivation (row
+  tops + empty row below, above dropped when negative, dock +
+  rail segments, nearest-point clamping); routing (same-ledge
+  WalkTo, jump up, drop down, no-route when rise too high,
+  snapDrop valid/invalid); planner determinism (same seed →
+  same pick; pick within range; dwell/sit/sleep ranges; speed
+  40-60); invalidation triggers (null → changed, same →
+  unchanged, page/layoutHash/settingsOpen/keyboardVisible/
+  editMode/iconSizeDp/dockSide changes → changed); Find flow
+  (happy path incl. NoMatch → Done → restart,
+  Choices → Navigating → Pointing → Done, Cancel/Timeout/
+  ModeChanged win, timeout const 20000, Done from Searching/
+  Choosing/Navigating → Done); Find resolution kinds (app
+  exact band, uncertain non-empty, no-match empty + NoMatch
+  decision, Setting + Action targets resolve).
+- MascotSpritesTest.kt (NEW, 72 lines): size targets (56/72/96,
+  else 72); integer scale (56dp@2.0 → 5, 72dp@1.0 → 3, tiny
+  density → min 2, 96dp@2.5 → 10); time-based frame stepping
+  (0 → frame 0, 100ms → frame 1 at 10fps, 600ms wraps, 350ms →
+  index 3, empty anim → 0); atlas parsing (valid JSON, empty
+  frames skipped, invalid JSON → null, empty animations →
+  null); DEFAULT_ATLAS matches the sheet layout (idle 0-3,
+  walk 4-9, poof 37-40, 41 distinct frames); expression mapping
+  (9 cases).
+- Existing tests untouched except MascotEngineTest additions
+  above; MascotBrainTest still passes its shape (BrainContext
+  gained a defaulted widgets field; GuideSetting gained a
+  defaulted controlKey). Tests written, NONE run (sandbox
+  executor broken, pre-existing; SettingsShellTest still has
+  its 10 pre-existing compile errors).
+
+### Phase E BLOCKED / not built (with reasons, never silent)
+
+- Pixel-stepped bubble border (2px steps at sprite scale): NOT
+  built. The bubble is a standard rounded Glass-style box
+  (20dp corners, accent hairline) with 14sp+ text. Reason: a
+  stepped border needs a custom border draw (stepped path
+  around a variable-size bubble) that would fight the shell's
+  rounded-rectangle bubble anatomy from Phase C; the readable
+  text + 48dp chips (the accessibility substance) are built,
+  the stepped outline is cosmetic. Follow-up, not silent.
+- Per-card Today rail ledges: NOT built. The graph has one
+  rail-top segment from the rail container rect; per-card tops
+  need per-card rects, which are not plumbed (TodayRail does
+  not export card rects). Rail coverage is therefore the rail
+  top + page + dock, not each card top. Follow-up: plumb
+  per-card rects the way PagedHome plumbs cell rects.
+- Side-dock top perch: NOT built. A vertical dock's top edge
+  sits at y=0, so a sprite standing on it would clip off the
+  top of the layer; side docks contribute a dock obstacle but
+  no perch. Bottom-dock top perch works. The sprite can still
+  reach side-dock-adjacent ledges (page rows, rail top).
+- Dock-app Find targets: bubble + Launch chip only, no
+  walk/ring. Dock item rects are not plumbed (dockKeys are keys,
+  not rects), so there is no ring target. Follow-up: plumb dock
+  item rects like cell rects.
+- Find pointing while a page is swiping: no edges across pages
+  while swiping (graph keys on the settled page); a guide
+  started mid-swipe waits for the settled page via the page
+  guard in the guide effect.
+- Jump arc is linear position + jump frames (rise/apex/fall/
+  land carry the arc read); no ballistic easing curve. The
+  prompt's frame list carries the arc; a curved tween would
+  double-apply it.
+- Timers restart (not resume-from-pause) when home resumes;
+  they never fire while home is stopped. A dwell/sit/sleep
+  clock that started before a stop restarts from zero after
+  resume — bounded (max one extra dwell cycle) and simpler
+  than persisting timer phase.
+- Guide starting mid-planner-trip resolves within one step
+  (planner abort check at step boundaries); the two routes do
+  not interleave beyond that bound.
+- MascotSearchEntries covers Reset mascot; folders/drawer/
+  search/gestures/animations/privacy/backup/profiles/apis/look/
+  theme controlKeys (where they exist in the help map) fall
+  back to hub level: the panel opens at the hub, no row ring,
+  the bubble names the control. Documented per-key in
+  PHASE-E.md; no row was redesigned to force an anchor.
+
+### Verification (Phase E)
+
+- Verification build: BUILD SUCCESSFUL in 11m 17s (build.sh);
+  APK app/build/outputs/apk/release/app-release.apk, 2,809,473
+  bytes, md5 eebdc1cf4fb21ad96432049fb4613b1d, aapt package
+  app.havenos.launcher versionCode 12 versionName 3.0 minSdk 26
+  targetSdk 36, apksigner CN=HavenOS SHA-256 match (keystore
+  match). Verification build only — NOT delivered anywhere,
+  nothing published or uploaded.
+- First build attempt FAILED at compile (4m 30s) with 8 error
+  groups, all fixed in the layer/host (no scope change):
+  awaitPointerEventScope is a PointerInputScope member, not a
+  top-level import (deleted the import; existing files
+  CalmMode/HomeA11y/Dock use it unimported); missing
+  animateFloat + layout.ime imports; graph block referenced
+  undefined ox/oy (now layerOrigin.x/y); moveDurationMs was
+  Int state assigned Long (now Long state); two `run {
+  continue }` inline-lambda continues (restructured to
+  if-null + continue, language version < 2.2); PointerChange
+  .positionChange() is not a function in this Compose version
+  (now position - previousPosition); Home.kt lacked the
+  boundsInWindow import. Second build passed clean.
+- Diff review vs the pre-E snapshot: only the files listed in
+  PHASE-E.md differ (plus the three doc files and the new
+  art/test/doc dirs); AndroidManifest.xml is byte-identical,
+  so Phase E adds NO permission. Security grep over the
+  changed files: no secrets, keys, tokens, or credentials
+  (only benign query-tokenization matches in MascotBrain/
+  MascotFind). No dependency added. No Room migration
+  (tips widening is a DataStore coercion change only).
+  Signing, version (3.0/vc12), and ~/workspace/havenos-github/
+  untouched.
+- Tests: 2 new files written (390 lines total), NONE run
+  (sandbox executor broken, pre-existing; SettingsShellTest
+  still has its 10 pre-existing compile errors).
+
+## 3.1 Phase F — On-device assist foundation (2026-10-30, 3.0/vc12 tree — verification build only, NOT a release)
+
+Phase F builds prompt §F (F1–F5) on the device-only principle (F0):
+assist works from data already on the device, runs on the device,
+and never sends screen-derived or usage data off it. No cloud AI,
+no new network calls, no new permissions. F6 is NOT in this pass.
+
+### F1 — Seam
+- `ui/assist/AssistRouter.kt`: the one assist provider (rules,
+  synonyms, ranking, no model). `MascotBrain` stays the chat seam;
+  no cloud provider exists. `LocalModelBrain` implements
+  `MascotBrain` behind `USE_MODEL_BRAIN = false` and delegates to
+  `ScriptedBrain`.
+
+### F2 — Lite improvements (no model, no new dependency)
+- Drawer search + panel (Settings home) search parse compounds
+  via `parseAssistCommands`: dark/light/system theme, bigger /
+  smaller icons (±8dp), accent by curated name, open app, go to
+  hub, toggle calm. Compounds are all-or-nothing; one bad clause
+  voids the whole query and normal search renders unchanged.
+  One row per compound, one Apply tap, labels show old → new.
+- App resolution reuses `matchApps` (real app list + local launch
+  stats); a band + confidence tie refuses rather than guesses.
+- App prediction untouched (`suggestApps`: count, recency,
+  same-hour boost). Categories, suggestions, emotes rule-based.
+- Clear learned data control lives in the ledger (F4).
+
+### F3 — Action router
+- Sealed whitelist only: OpenApp, OpenHub, SetDarkMode,
+  StepIconSize, SetAccentCurated, ToggleCalm. No uninstall /
+  hide-all / permission variant can be emitted. Names resolve
+  against the real app list and the real settings index
+  (`FIND_SETTING_INDEX` + hub alias table); not found → fallback.
+- Setting changes use typed setters with range checks (dark mode
+  0..3, icon size clamped 40..68, accent by curated name keeping
+  strength/recents). Panel path applies in-session → Changes
+  shows readable names + Revert. Drawer path parks actions in
+  `pendingAssistActions` and the panel-open effect applies them
+  AFTER `panelSession.begin()`, so Before shows the pre-change
+  home. Row label is the preview; tap is the confirmation.
+
+### F4 — AI Privacy Ledger (Privacy hub)
+- All five features (Search commands, App prediction, Mascot
+  Find, Mascot chat, Suggestions) with what local data each
+  reads, an On-device badge, last used time + use count, and a
+  per-feature switch. Storage is counts + times ONLY (hand-rolled
+  flat JSON; one DataStore write per record).
+- Prediction's row derives from launch stats (no per-render
+  write). Find's switch reuses `mascotFindOn`; Suggestions'
+  switch maps to `mascotTips != Off` (re-enable restores Rare).
+  Chat's switch gates conversational branches only — Find keeps
+  working with chat off. Prediction's switch gates the Suggested
+  widget's input (off → its existing empty state).
+- Clear learned data wipes in-memory + persisted launch stats
+  and both ledger JSONs; mascot muted/don't-show lists stay
+  (they are preferences, not learned data).
+
+### F5 — Optional local model pack (SCAFFOLD ONLY)
+- `ModelPackManager` (app-private storage, sidecar sha + bytes):
+  user-request-only download, Wi-Fi-only by default, progress +
+  cancel, SHA-256 verification before atomic rename, free-space
+  (100 MB headroom) + RAM (1 GB scaffold floor) checks, delete.
+  The empty-URL gate fires before any network use.
+- `MODEL_PACK_URL` / `MODEL_PACK_SHA256` are EMPTY placeholders
+  (no values invented). No runtime picked (Phase 3 conclusion
+  stands). Mascot hub Chat model row shows the REAL pack state
+  ("Not set up" today) with Delete when READY; no download
+  button that does nothing. A model wakes only via chat and
+  never returns a settings-changing action.
+
+### Deviations (with reasons)
+- "silent" has NO mapping: no silent / do-not-disturb setting
+  exists in `SettingsState`, and inventing one would need new
+  behavior + a permission beyond §F. It falls back to search.
+- Panel-search command rows do not navigate to the changed
+  control: the row stays so the Changes footer (with Revert)
+  stays visible as the confirmation surface.
+- Mixed app + setting compounds land on the last setting
+  action's hub; every action still executes exactly once.
+- Ledger switches are not session-revertible (same scope as
+  `mascotFindOn`, which `commitSnapshot` also omits). Router
+  actions ARE revertible (Dark mode / Accent / Icon size).
+- Ledger history is not backed up (device-local ephemeral, same
+  scope as mascot prefs which backup omits).
+
+### BLOCKED (with reasons, never silent)
+- SearchCard command rows: `SearchCard` shares
+  `SearchResultsList` but its Home call site passes no command
+  handler, so it renders no command rows. Drawer + panel search
+  cover §F2; wiring SearchCard is a small follow-up.
+- Model-pack download / checksum / Wi-Fi / space / RAM / cancel
+  / delete paths: scaffold-only until a real model URL +
+  checksum is configured (placeholders empty by design).
+- No runtime picked; `LocalModelBrain` delegates until one
+  integrates cleanly.
+- F6 (Scenes, Style DNA, Recall, notification digest, cloud AI,
+  mascot voice, more characters, online themes store): NOT in
+  this pass.
+- Phase E BLOCKED items carried unchanged (pixel-stepped bubble
+  border, per-card rail ledges, side-dock perch, dock-app Find =
+  bubble + Launch only).
+
+### Verification (Phase F)
+- First build attempt FAILED at compile (2m 13s) with 2 error
+  groups, both fixed in place (no scope change): the second
+  `SearchResultsList` call site is inside `SearchCard`, not
+  `LibraryOverlay` (arg dropped); `BrainContext.chatEnabled`
+  was inserted mid-constructor and broke positional callers
+  (moved to last param). Second build passed clean.
+- Verification build: 2,825,857 bytes, md5
+  f4a56ac74624e44d58f1453bfb3bc0ba, vc12 / 3.0, havenos cert
+  match (apksigner SHA-256
+  53bff2a09aedb516a8ee6193234a7aaf5d04ce901fb8931b799191b9845354a8).
+  Verification build only — NOT delivered anywhere, nothing
+  published or uploaded.
+- AndroidManifest.xml byte-identical (NO new permission);
+  `app/build.gradle.kts` identical (NO new dependency). No Room
+  migration (DataStore keys only). Security grep over the
+  changed files: no secrets, keys, tokens, or credentials.
+  Glyph scan: no emoji; `→` in command labels follows existing
+  shipped precedent (Changes rows, gestures hub).
+  Signing, version (3.0/vc12), and ~/workspace/havenos-github/
+  untouched.
+- Tests: 3 new files written (296 lines total), NONE run
+  (sandbox executor broken, pre-existing; SettingsShellTest
+  still has its 10 pre-existing compile errors).
+- Full per-step record: `docs/3.1-phase-reports/PHASE-F.md`.
+
+## 3.1 Phase G — Verification, docs, report + final version stamp (2026-10-30, 3.1.0/vc13 tree — final build, NOT delivered)
+
+- G1 checks, all run independently in Phase G (not trusted from
+  prior reports): release build.sh BUILD SUCCESSFUL in 35s
+  (incremental, APK identical to Phase F: 2,825,857 bytes, md5
+  f4a56ac74624e44d58f1453bfb3bc0ba, vc12/3.0, havenos cert match);
+  debug assemble feasible via the same recipe (BUILD SUCCESSFUL
+  in 6m 50s, debug APK 16,205,713 bytes, md5
+  c4976baa8d5ea2596d355acae2ccae38 — feasibility check only,
+  never a deliverable); lint ran offline (BUILD FAILED in 5m 5s,
+  16 errors, 89 warnings, 35 hints — all pre-existing, none fixed
+  here); unit tests attempted (BUILD FAILED in 1m 12s at test
+  compile, 305 errors, zero tests ran — see below);
+  instrumentation NOT APPLICABLE (no androidTest dirs); screenshot
+  tests NOT APPLICABLE (no screenshot test files).
+- G1 test finding (new detail, not just "not run"): the test tree
+  does not compile. Per-file errors: MascotEngineTest 126,
+  AssistRouterTest 53, MascotSpritesTest 45, ModelPackTest 28,
+  AssistLedgerTest 28, SettingsShellTest 10 (pre-existing
+  gridShrink helpers), LayoutStateTest 6, EditModeTest 5,
+  HexLiteralTest 2, EmojiScanTest 2. Root causes: Phase E/F tests
+  import kotlin.test.* but the project declares only JUnit4
+  (kotlin-test is not a declared test dependency); LayoutState /
+  EditMode / SettingsShell tests are stale vs the coord-fix APIs;
+  2 type errors in the Phase B scan tests. The sandbox executor
+  breakage is a second blocker behind compilation. Repair is the
+  recommended next improvement, not a Phase G fix (Phase G changed
+  no app or test source, so it introduced no regression).
+- G2 manual: source
+  ~/workspace/your_files/havenos-how-it-works/.src/index.html
+  updated to 3.1 (sections 1–3, flows 13–16, A2/A3/CardStatus,
+  pixel mascot + ledges + Find, island restyle, honest section
+  10; Figure 7 embeds docs/mascot/preview.png; backup
+  .src/index.html.pre-3.1; HTML parses clean, tags balanced).
+  PDF NOT rebuilt: the render pipeline is not reproducible from
+  .src/ (no scripts saved, no Chromium binary here) — the
+  delivered PDF remains the 3.0 version until rebuilt; follow-up,
+  not hidden, and it did not block the build.
+- G2 docs: DEVICE_CHECKLIST.md gained the consolidated 3.1 FINAL
+  top section (G-1…G-26, all NOT RUN, mapping the G3 areas to the
+  existing series); UNVERIFIED.md gained the missing Phase A
+  section plus the Phase G section; this Phase G section.
+- G3 consolidated checklist: G-1…G-26 in DEVICE_CHECKLIST.md
+  (home, Settings, cards, drawer, mascot, safety, performance,
+  upgrade, Follow-density, menu destinations, island callbacks,
+  refresh-on-resume). Every item NOT RUN.
+- G4 report: docs/3.1-phase-reports/PHASE-G.md (per-phase changes,
+  tests, checks + results, dependencies, files, assumptions,
+  deviations, unverified, gaps, next improvement, open decisions).
+  No claim of production readiness, accessibility conformance, or
+  security review.
+- Dependencies: NONE across all of 3.1 (build.gradle.kts identical
+  to the pre-Phase-A snapshot, verified by diff). No new permission
+  (manifest byte-identical to the pre-G snapshot).
+- Final version stamp (LAST, after G1–G4): versionCode 12 → 13,
+  versionName "3.0" → "3.1.0" in app/build.gradle.kts (two lines).
+  Final build: build.sh BUILD SUCCESSFUL in 8m 37s, GRADLE_EXIT=0.
+  Final APK app/build/outputs/apk/release/app-release.apk,
+  2,825,857 bytes, md5 cc45b27dcf53ca487af36fe68a9cc4b2;
+  aapt package app.havenos.launcher, versionCode 13, versionName
+  3.1.0, minSdk 26, targetSdk 36; apksigner CN=HavenOS, SHA-256
+  53bff2a09aedb516a8ee6193234a7aaf5d04ce901fb8931b799191b9845354a8
+  (keystore match). NOT delivered, NOT published — parent owns
+  delivery and the release decision.
+- BLOCKED / carried: PDF rebuild (follow-up); lint errors (16) and
+  test-compile errors (305) unfixed (pre-existing, out of scope);
+  all Phase A–F deviations and BLOCKED items carried in PHASE-G.md.
+- Full per-step record: docs/3.1-phase-reports/PHASE-G.md.
+
+## 3.1.1 hotfix (2026-10-31, 3.1.0/vc13 tree → 3.1.1/vc14 — verification build only, NOT delivered)
+
+- Item 1 crash sweep: `firstNotNullOf` → `firstNotNullOfOrNull` in
+  MascotLayer placementOf (the prime suspect for the reported
+  NoSuchElementException class — NOT a proven vc13 line, because no
+  vc13 mapping.txt was retained); MascotEngine BFS / reconstruction
+  / pickTargetLedgePoint trailing lines converted to OrNull +
+  return-null (host stays put on route failure); MascotSprites idle
+  fallback; spriteSet `!!` removed; GesturesMotionHub picked `!!`
+  race in the icon-swipe launch fixed. All other first/last/getValue
+  /`!!` sites triaged in the hotfix report as guarded or reviewed-safe
+  (not churned). `-keepattributes SourceFile,LineNumberTable` added
+  to app/proguard-rules.pro; mapping.txt retention starts with vc14
+  (release-artifacts/mapping-14.txt); retrace documented in
+  ~/workspace/havenos/README.md (created by this hotfix).
+- Item 2 failure isolation: new ui/FeatureGuard.kt (supervised
+  scopes + CoroutineExceptionHandler; local-only feature_errors.txt,
+  last 20; session-only disable; one toast per feature — mascot
+  "Mascot paused after an error"). Mascot/Find scopes in
+  MascotLayer, island refresh catch in IslandFeed, online-cards
+  retry catch + host early return in TodayApiCards, host gates in
+  Home.kt. Feature failures never write crash markers.
+- Item 3 crash-loop protection: extends HavenApp.installCrashLog
+  (no second handler) with a small timestamp marker + delegation;
+  2+ crashes in 60s → Safe Mode (mascot, island, workers, blur off;
+  stored settings never mutated, so Re-enable is exact by
+  construction; 10-minute stable timer; snapshot in safe_mode.txt).
+  Banner (exact text "HavenOS recovered from a crash. Mascot turned
+  off") with Re-enable / View details in ui/SafeModeBanner.kt;
+  theme-level Solid override in MainActivity; gates + banner in
+  Home.kt; last crash + feature errors in DeviceDataHub Diagnostics
+  (user-triggered Copy/Share only, nothing uploaded).
+- Item 4 touch pass-through: MascotLayer root verified
+  pointer-transparent (observing loop, never consuming); sprite Box
+  carries graphicsLayer translation AND input on the same node (no
+  translated-draw/untranslated-touch bug); spotlight dim fixed to
+  consume only the dismiss tap's up event and release swipes
+  unconsumed; bubble position math moved into the graphicsLayer
+  lambda (no per-frame recomposition); spriteHitRect helper added.
+  UI test MascotTouchTest written, NOT run.
+- Item 5 settings layout: root cause confirmed in code (panel
+  ~46% / 480–660dp + 260dp rail → ~240dp detail; weighted label
+  rows wrapped per character). Panel now clamp(640dp, 56%, 920dp);
+  rail 72dp icon-only (tooltip + accessibility label) under 900dp,
+  200dp at 900dp+; single-pane under 560dp; detail ≥ 360dp in
+  master-detail; AdaptiveSettingRow custom Layout (label ≥
+  max(140dp, 50%), stacks otherwise) behind HubRow/HubSwitchRow;
+  HavenSegmented equal-≥64dp or wrapping chips (softWrap off,
+  maxLines 1); ApiKeyField label-above + 72dp button row; header
+  title maxLines 2 (never ellipsized), Before/Changes icon-only
+  under 560dp; hub rows 1-line title / 2-line summary. Matrix unit
+  tests written, NOT run.
+- Item 6 drawer fully solid: drawerSurface + drawerField tokens in
+  LookTokens (dark near-black + ~4% accent at alpha 1.0, light
+  off-white; ≥ 4.5:1 contrast; no hex outside the token module);
+  sheet converted from Glass2 to opaque drawerSurface with 28dp top
+  corners, 1dp top hairline, drag handle, 40% scrim behind;
+  translation-only open (AnimatedVisibility slide, no fade);
+  search field, history/hidden chips, sticky headers, letter bubble
+  all solid drawerField; IME insets + compact toolbar row kept;
+  glass stays for floating things. Drawer tests extend
+  HexLiteralTest (alpha, contrast, source scan — the scan FAILS THE
+  BUILD on any translucent drawer colour); screenshot test
+  DrawerSolidTest written, NOT run.
+- Item 7 mascot bubble (E3, overriding the Phase E deferral):
+  SteppedRoundedShape + steppedCornerPoints (2px steps at sprite
+  scale, 20dp corner kept, 14sp+ text kept); menu rebuilt as a
+  FlowRow of four 48dp icon chips (Find/Search, Help/Help,
+  Suggest/Star, Dismiss/Close); anchor/flip, IME clamp, close/back
+  dismiss, and Find flow states unchanged. No Phase C bubble
+  behavior conflicted, so no closest-variant compromise was needed.
+- Deliberately NOT changed in this hotfix: PagedHome cell
+  `appEntry!!` / `folder!!` and ghost `overCell!!` (observed in the
+  sweep, out of the briefed scope — needs a scoping decision);
+  SearchCard (a floating surface, not the drawer sheet);
+  HavenSegmented's use in non-drawer hubs (same component, same
+  modes); the delivered explainer PDF (still 3.0 — rebuild is a
+  separate follow-up).
+- Full per-item record: docs/3.1-phase-reports/HOTFIX-3.1.1.md.
+  Tests: HotfixCrashSweepTest, SettingsLayoutMatrixTest,
+  CrashLoopTest, HexLiteralTest drawer tests (unit, written NOT
+  run); MascotTouchTest, DrawerSolidTest (UI, written NOT run, NOT
+  compiled here). Nothing in the hotfix is device-verified.
+- Final build: build.sh BUILD SUCCESSFUL in 8m 58s; final APK
+  2,842,241 bytes, md5 5133348a0a3764f4181bb80786748a81, vc14/3.1.1,
+  havenos cert match; mapping retained as
+  release-artifacts/mapping-14.txt. NOT delivered, NOT published —
+  parent owns delivery and the release decision.

@@ -27,24 +27,29 @@ data class WeatherData(
     val fetchedAtMs: Long,
 )
 
-/** WMO weather code -> (label, symbol). Symbols are plain text glyphs. */
-fun weatherInfo(code: Int): Pair<String, String> = when (code) {
-    0 -> "Clear" to "☀"
-    1 -> "Mostly clear" to "☀"
-    2 -> "Partly cloudy" to "⛅"
-    3 -> "Overcast" to "☁"
-    45, 48 -> "Fog" to "≋"
-    51, 53, 55 -> "Drizzle" to "☂"
-    56, 57 -> "Freezing drizzle" to "☂"
-    61, 63, 65 -> "Rain" to "☂"
-    66, 67 -> "Freezing rain" to "☂"
-    71, 73, 75 -> "Snow" to "❄"
-    77 -> "Snow grains" to "❄"
-    80, 81, 82 -> "Showers" to "☂"
-    85, 86 -> "Snow showers" to "❄"
-    95 -> "Thunderstorm" to "⚡"
-    96, 99 -> "Thunderstorm, hail" to "⚡"
-    else -> "Unknown" to "—"
+/** Weather condition kinds. Labels are unchanged; the rendered symbol is now a HavenIcon (see weatherIcon), never a text glyph. */
+enum class WeatherKind {
+    CLEAR, MOSTLY_CLEAR, PARTLY, OVERCAST, FOG, DRIZZLE, RAIN, SNOW, SHOWERS, STORM, UNKNOWN,
+}
+
+/** WMO weather code -> (label, kind). */
+fun weatherInfo(code: Int): Pair<String, WeatherKind> = when (code) {
+    0 -> "Clear" to WeatherKind.CLEAR
+    1 -> "Mostly clear" to WeatherKind.MOSTLY_CLEAR
+    2 -> "Partly cloudy" to WeatherKind.PARTLY
+    3 -> "Overcast" to WeatherKind.OVERCAST
+    45, 48 -> "Fog" to WeatherKind.FOG
+    51, 53, 55 -> "Drizzle" to WeatherKind.DRIZZLE
+    56, 57 -> "Freezing drizzle" to WeatherKind.DRIZZLE
+    61, 63, 65 -> "Rain" to WeatherKind.RAIN
+    66, 67 -> "Freezing rain" to WeatherKind.RAIN
+    71, 73, 75 -> "Snow" to WeatherKind.SNOW
+    77 -> "Snow grains" to WeatherKind.SNOW
+    80, 81, 82 -> "Showers" to WeatherKind.SHOWERS
+    85, 86 -> "Snow showers" to WeatherKind.SNOW
+    95 -> "Thunderstorm" to WeatherKind.STORM
+    96, 99 -> "Thunderstorm, hail" to WeatherKind.STORM
+    else -> "Unknown" to WeatherKind.UNKNOWN
 }
 
 /** The ONLY network surface in the app: Open-Meteo hosts, hard-allowlisted. */

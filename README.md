@@ -4,18 +4,18 @@
 
 # HavenOS
 
-![Version](https://img.shields.io/badge/version-2.0%20(vc11)-blue.svg)
+![Version](https://img.shields.io/badge/version-3.1.1%20(vc14)-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Android%2026%2B-lightgrey.svg)
 
 **HavenOS is a launcher** — a tablet-first, Minimal home screen for Android,
 written in Kotlin and Jetpack Compose. One design language, no theme store,
-no accounts, no ads, no analytics. The only network feature is an optional
-weather widget.
+no accounts, no ads, no analytics. Network use is opt-in per API (Today
+cards and search extras), cache-first so the launcher stays instant offline.
 
 - **Package:** `app.havenos.launcher`
 - **Minimum Android:** 8.0 (API 26) · **Target:** Android 16 (API 36)
-- **Latest release:** [v2.0 (versionCode 11)](CHANGELOG.md) — see
+- **Latest release:** [v3.1.1 (versionCode 14)](CHANGELOG.md) — see
   [Releases](https://github.com/Voidwalker-28/HavenOS/releases) for the APK.
 
 > HavenOS is a launcher, not an operating system. It replaces your home

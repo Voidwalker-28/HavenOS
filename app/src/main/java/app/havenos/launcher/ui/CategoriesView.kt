@@ -20,7 +20,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -36,6 +35,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import app.havenos.launcher.ui.glass.HavenDialogFilledButton
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
 import app.havenos.launcher.data.AppEntry
 import app.havenos.launcher.data.AppRepository
 import app.havenos.launcher.data.categoryIdOf
@@ -425,10 +428,17 @@ fun CategoriesView(
         var name by remember(renameId) {
             mutableStateOf(overrides.names[renameId] ?: LIBRARY_CATEGORY_NAMES[renameId].orEmpty())
         }
-        AlertDialog(
-            onDismissRequest = { renameCategory = null },
-            title = { Text("Rename category") },
-            text = {
+        HavenGlassDialog(
+            onDismiss = { renameCategory = null },
+            title = "Rename category",
+            buttons = {
+                TextButton(onClick = { renameCategory = null }) { Text("Cancel") }
+                HavenDialogFilledButton(label = "Save", onClick = {
+                    onRenameCategory(renameId, name.trim())
+                    renameCategory = null
+                })
+            },
+            content = {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -437,13 +447,6 @@ fun CategoriesView(
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    onRenameCategory(renameId, name.trim())
-                    renameCategory = null
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { renameCategory = null }) { Text("Cancel") } },
         )
     }
 
@@ -451,10 +454,13 @@ fun CategoriesView(
     val moving = moveApp
     if (moving != null) {
         val currentId = assignCategory(moving, overrides)
-        AlertDialog(
-            onDismissRequest = { moveApp = null },
-            title = { Text("Move “${moving.label}” to…") },
-            text = {
+        HavenGlassDialog(
+            onDismiss = { moveApp = null },
+            title = "Move “${moving.label}” to…",
+            buttons = {
+                TextButton(onClick = { moveApp = null }) { Text("Cancel") }
+            },
+            content = {
                 LazyColumn(
                     Modifier.fillMaxWidth()
                         .heightIn(max = 320.dp),
@@ -470,11 +476,14 @@ fun CategoriesView(
                                 .padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                if (id == currentId) "● " else "○ ",
-                                color = palette.accent,
-                                fontSize = 14.sp,
+                            HavenIconImage(
+                                if (id == currentId) HavenIcon.RadioOn else HavenIcon.RadioOff,
+                                if (id == currentId) "Current category" else null,
+                                size = 20.dp,
+                                tint = if (id == currentId) palette.accent
+                                    else palette.onSurface.copy(alpha = 0.5f),
                             )
+                            Spacer(Modifier.width(8.dp))
                             Text(
                                 categoryDisplayName(id, overrides),
                                 color = palette.onSurface,
@@ -486,8 +495,6 @@ fun CategoriesView(
                     }
                 }
             },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { moveApp = null }) { Text("Cancel") } },
         )
     }
 }

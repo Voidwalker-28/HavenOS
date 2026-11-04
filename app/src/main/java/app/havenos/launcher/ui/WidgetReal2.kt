@@ -29,8 +29,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -62,8 +62,18 @@ import app.havenos.launcher.data.WeatherNet
 import app.havenos.launcher.data.parseAllowedCalendars
 import app.havenos.launcher.data.weatherInfo
 import app.havenos.launcher.theme.GlassSurface
+import app.havenos.launcher.ui.mascot.MascotCharacter
+import app.havenos.launcher.ui.mascot.StaticSpriteFrame
+import app.havenos.launcher.ui.mascot.USE_PIXEL_MASCOT
+import app.havenos.launcher.ui.mascot.rememberSpriteSet
+import app.havenos.launcher.ui.mascot.spriteScaleFor
+import app.havenos.launcher.ui.glass.HavenDialogFilledButton
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.vector
 import app.havenos.launcher.theme.LocalPalette
 import app.havenos.launcher.theme.LocalState
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -176,44 +186,13 @@ private fun CityPickerDialog(
     var searching by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<Triple<String, Double, Double>>>(emptyList()) }
     var error by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Weather city") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { Text("City name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (searching) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("Searching…", color = LocalPalette.current.muted, fontSize = 12.sp)
-                }
-                if (error.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(error, color = LocalPalette.current.muted, fontSize = 12.sp)
-                }
-                LazyColumn(Modifier.fillMaxWidth().height(220.dp)) {
-                    items(results, key = { it.first + it.second.toString() }) { r ->
-                        TextButton(
-                            onClick = { onPicked(r.first, r.second, r.third) },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                r.first, fontSize = 13.sp, maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
+    HavenGlassDialog(
+        onDismiss = onDismiss,
+        title = "Weather city",
+        buttons = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+            HavenDialogFilledButton(
+                label = "Search",
                 enabled = query.isNotBlank() && !searching,
                 onClick = {
                     searching = true
@@ -225,9 +204,39 @@ private fun CityPickerDialog(
                         if (found.isEmpty()) error = "City not found — check the name and connection."
                     }
                 },
-            ) { Text("Search") }
+            )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        content = {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("City name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (searching) {
+                Spacer(Modifier.height(8.dp))
+                Text("Searching…", color = LocalPalette.current.muted, fontSize = 12.sp)
+            }
+            if (error.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(error, color = LocalPalette.current.muted, fontSize = 12.sp)
+            }
+            LazyColumn(Modifier.fillMaxWidth().height(220.dp)) {
+                items(results, key = { it.first + it.second.toString() }) { r ->
+                    TextButton(
+                        onClick = { onPicked(r.first, r.second, r.third) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            r.first, fontSize = 13.sp, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        },
     )
 }
 
@@ -340,13 +349,18 @@ fun WeatherWidgetReal(app: HavenApp, item: HomeItem, editMode: Boolean, modifier
                 }
                 else -> {
                     val w = data!!
-                    val (label, symbol) = weatherInfo(w.code)
+                    val (label, wkind) = weatherInfo(w.code)
                     val locality = localityOnly(w.cityName)
                     val stale = isWeatherStale(w.fetchedAtMs, System.currentTimeMillis())
                     if (cellsW <= 2) {
                         // 2×2: icon, temperature, condition.
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(symbol, fontSize = 34.sp, color = palette.onSurface)
+                            Icon(
+                                weatherIcon(wkind).vector(),
+                                contentDescription = label,
+                                tint = palette.onSurface,
+                                modifier = Modifier.size(34.dp),
+                            )
                             Spacer(Modifier.width(8.dp))
                             Column {
                                 Text(
@@ -362,7 +376,12 @@ fun WeatherWidgetReal(app: HavenApp, item: HomeItem, editMode: Boolean, modifier
                         }
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(symbol, fontSize = 38.sp, color = palette.onSurface)
+                            Icon(
+                                weatherIcon(wkind).vector(),
+                                contentDescription = label,
+                                tint = palette.onSurface,
+                                modifier = Modifier.size(38.dp),
+                            )
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(
@@ -396,10 +415,15 @@ fun WeatherWidgetReal(app: HavenApp, item: HomeItem, editMode: Boolean, modifier
                             Spacer(Modifier.height(10.dp))
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 for (h in w.hourly.take(4)) {
-                                    val (_, hs) = weatherInfo(h.code)
+                                    val (_, hsKind) = weatherInfo(h.code)
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                         Text(h.label, color = palette.muted, fontSize = 10.sp, maxLines = 1)
-                                        Text(hs, fontSize = 15.sp, color = palette.onSurface)
+                                        Icon(
+                                            weatherIcon(hsKind).vector(),
+                                            contentDescription = null,
+                                            tint = palette.onSurface,
+                                            modifier = Modifier.size(15.dp),
+                                        )
                                         Text(
                                             formatTempDisplay(h.temp, state.weatherUnits),
                                             color = palette.onSurface, fontSize = 11.sp, maxLines = 1,
@@ -412,10 +436,15 @@ fun WeatherWidgetReal(app: HavenApp, item: HomeItem, editMode: Boolean, modifier
                             Spacer(Modifier.height(8.dp))
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 for (d in w.daily.take(5)) {
-                                    val (_, ds) = weatherInfo(d.code)
+                                    val (_, dsKind) = weatherInfo(d.code)
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                         Text(d.label, color = palette.muted, fontSize = 10.sp, maxLines = 1)
-                                        Text(ds, fontSize = 14.sp, color = palette.onSurface)
+                                        Icon(
+                                            weatherIcon(dsKind).vector(),
+                                            contentDescription = null,
+                                            tint = palette.onSurface,
+                                            modifier = Modifier.size(14.dp),
+                                        )
                                         Text(
                                             "${formatTempDisplay(d.max, state.weatherUnits)} / " +
                                                 formatTempDisplay(d.min, state.weatherUnits),
@@ -550,6 +579,19 @@ fun AgendaWidgetReal(app: HavenApp, item: HomeItem, editMode: Boolean, modifier:
                     }
                 }
                 events.isEmpty() -> {
+                    // 3.1 Phase E: static sleeping pose above the
+                    // text when the pixel set loads. Pixel-only: the
+                    // vector path keeps today's figure-less layout.
+                    val agendaCharacter =
+                        if (state.mascotCharacter == 1) MascotCharacter.MILA else MascotCharacter.MILO
+                    val sleepSet = rememberSpriteSet(agendaCharacter, palette.accent.toArgb())
+                    if (USE_PIXEL_MASCOT && sleepSet != null) {
+                        StaticSpriteFrame(
+                            sleepSet, 17,
+                            spriteScaleFor(56f, LocalDensity.current.density),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
                     Text("No events today", color = palette.onSurface, fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
                     Button(
@@ -607,13 +649,18 @@ fun SuggestedWidgetHost(
     modifier: Modifier = Modifier,
 ) {
     val stats by app.appRepo.stats.collectAsState()
+    val settingsState by app.settings.state.collectAsState()
     val now = useNow(60_000L)
     val hour = remember(now) {
         Calendar.getInstance().apply { timeInMillis = now }.get(Calendar.HOUR_OF_DAY)
     }
-    val ranked = remember(stats, appsByKey, hour, now) {
+    // 3.1 Phase F (F4): the ledger's prediction switch gates the input,
+    // not the ranking — suggestApps itself is untouched, and off shows
+    // the widget's existing empty state.
+    val ranked = remember(stats, appsByKey, hour, now, settingsState.assistPrediction) {
+        val inputStats = if (settingsState.assistPrediction) stats else emptyMap()
         suggestApps(
-            stats = stats.entries.map { LaunchStat(it.key, it.value.first, it.value.second) },
+            stats = inputStats.entries.map { LaunchStat(it.key, it.value.first, it.value.second) },
             appsByKey = appsByKey,
             hourOfDay = hour,
             nowMs = now,

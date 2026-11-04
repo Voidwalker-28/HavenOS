@@ -48,6 +48,23 @@ data class SnapshotPreview(
 fun SnapshotRecord.toPreview(itemIds: List<String>): SnapshotPreview =
     SnapshotPreview(id, createdAtMs, pageCount, itemCount, folderCount, itemIds)
 
+/**
+ * Coordination fix §6: first-page items for a Restore thumbnail, in
+ * snapshot order. (Flow-era snapshots carry page 0 for everything, so
+ * this is the whole home; paged-era snapshots genuinely filter.)
+ */
+fun firstPagePreviewItems(items: List<HomeItem>): List<HomeItem> =
+    items.filter { it.page == 0 }
+
+/**
+ * Coordination fix §6: thumbnail gate. A snapshot with zero
+ * renderable items (no ids, or no first-page items) falls back to the
+ * counts-only row — never a blank tile, never a crash. Unknown ids
+ * still render (as fallback tiles), so they do not fail this gate.
+ */
+fun showRestoreThumbnail(preview: SnapshotPreview, firstPageItems: List<HomeItem>): Boolean =
+    preview.itemIds.isNotEmpty() && firstPageItems.isNotEmpty()
+
 /** Auto-snapshot throttle: at most once per hour (Doc 3 §3.6). */
 const val SNAPSHOT_MIN_INTERVAL_MS: Long = 3_600_000L
 

@@ -150,6 +150,9 @@ data class HomeColors(
     val isDark: Boolean,
 )
 
+/** Flip-clock tile background (near-black, white text on top). Named token so Widgets.kt carries no hex literal. */
+val FlipTileBackground: Color = Color(0xFF17181C)
+
 /** Resolve semantic colours from the existing palette. Accent is the palette accent. */
 fun homeColorsFor(palette: Palette, isDark: Boolean): HomeColors = HomeColors(
     wallpaperScrim = Color.Black.copy(alpha = 0.35f),

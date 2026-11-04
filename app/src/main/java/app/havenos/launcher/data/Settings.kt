@@ -22,6 +22,14 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import org.json.JSONObject
 import java.io.IOException
+import app.havenos.launcher.ui.glass.AccentSelection
+import app.havenos.launcher.ui.glass.AccentSource
+import app.havenos.launcher.ui.glass.AccentStrength
+import app.havenos.launcher.ui.glass.accentSourceFromName
+import app.havenos.launcher.ui.glass.curatedArgb
+import app.havenos.launcher.ui.glass.encodeRecents
+import app.havenos.launcher.ui.glass.migrateAccent
+import app.havenos.launcher.ui.glass.parseRecents
 
 /** Default gesture map (trigger -> action), edited in Settings → Gestures. */
 const val DEFAULT_GESTURES =
@@ -141,6 +149,13 @@ data class SettingsState(
     // Cat 1 Style & Theme
     val accentMode: Int = 0, // 0 Minimal default, 1 palette, 2 custom hex, 3 wallpaper-derived (kept for backup round-trip only)
     val accentArgb: Int = 0, // argb; 0 = Minimal default
+    // 3.1 Phase B7: the live accent selection. Old mode/argb are kept for
+    // backup round-trip only; new keys are authoritative on load.
+    val accentSource: String = "curated", // AccentSource name
+    val accentCurated: String = "Ember",
+    val accentCustomArgb: Int = 0,
+    val accentStrength: Int = 0, // 0 Subtle, 1 Balanced, 2 Vivid
+    val accentRecents: String = "", // comma-separated hex, newest first, max 6
     val cornerDp: Int = -1, // surface corner radius dp; -1 = Minimal default (12dp)
     val surfaceMaterial: Int = 2, // 0 solid, 1 translucent, 2 frosted
     val surfaceBlurPct: Int = 60, // 0..100 (kept for backup round-trip only since 2026-10-23: surface material drives blur)
@@ -263,6 +278,38 @@ data class SettingsState(
     val coingeckoKey: String = "",
     val nasaKey: String = "",
     val githubUsername: String = "Voidwalker-28",
+    // v3 Track A (Mascot). mascotOn defaults OFF: opt-in only, and a
+    // dismiss (mascotDismissed) sticks across restarts until the
+    // Settings "Bring back mascot" row clears it. Character 0 = Milo,
+    // 1 = Mila (names in strings.xml, one-line rename). Size 0/1/2 =
+    // small/medium/large. Tips 0 = off, 1 = rare. Quiet hours are
+    // minutes of day; home spot is fractions of the home area.
+    val mascotOn: Boolean = false,
+    val mascotCharacter: Int = 0,
+    val mascotRoaming: Boolean = true,
+    val mascotSize: Int = 1,
+    val mascotFindOn: Boolean = true,
+    // 3.1 Phase F (F4): assist ledger switches + stored counts/times.
+    // All default on; the JSONs hold counts and times only, never content.
+    val assistSearchCommands: Boolean = true,
+    val assistPrediction: Boolean = true,
+    val assistChat: Boolean = true,
+    val assistLastUsedJson: String = "{}",
+    val assistCountsJson: String = "{}",
+    val mascotTips: Int = 1,
+    val mascotQuietStart: Int = 1320, // 22:00
+    val mascotQuietEnd: Int = 420, // 07:00
+    val mascotReduceMotion: Boolean = false,
+    val mascotDismissed: Boolean = false,
+    val mascotHomeX: Float = 0.85f,
+    val mascotHomeY: Float = 0.78f,
+    val mascotDontShowJson: String = "[]", // tutorial ids, don't-show-again
+    val mascotMutedJson: String = "[]", // muted suggestion ids
+    val mascotLastNudgeMs: Long = 0L,
+    // v3 Track B (Dynamic Island): home pill, opt-in. Default OFF —
+    // same opt-in rule as the mascot. Hidden entirely when no live
+    // activity exists, so OFF and "on but idle" look identical.
+    val islandOn: Boolean = false,
 )
 
 /** Effective grid (in CELLS) for the current orientation, honoring overrides. */
@@ -278,6 +325,20 @@ fun SettingsState.gridCells(landscape: Boolean): Pair<Int, Int> {
     } else {
         if (rowsPort > 0) rowsPort else 5 + (d * 4 + 50) / 100
     }
+    return cols.coerceIn(3, 12) to rows.coerceIn(3, 12)
+}
+
+/**
+ * Coordination fix §2/§3: the density-only grid (same formula as
+ * [gridCells], overrides ignored). Follow-density commits through
+ * GridChange with [LayoutMutation.GridChange.followDensity], which
+ * clears the override instead of writing one — so "follows density"
+ * stays true when density later changes.
+ */
+fun SettingsState.densityGridCells(landscape: Boolean): Pair<Int, Int> {
+    val d = density.coerceIn(0, 100)
+    val cols = if (landscape) 4 + (d * 6 + 50) / 100 else 3 + (d * 3 + 50) / 100
+    val rows = if (landscape) 3 + (d * 5 + 50) / 100 else 5 + (d * 4 + 50) / 100
     return cols.coerceIn(3, 12) to rows.coerceIn(3, 12)
 }
 
@@ -408,6 +469,11 @@ class Settings(ctx: Context) {
         val hapticStrength = intPreferencesKey("haptic_strength")
         val accentMode = intPreferencesKey("accent_mode")
         val accentArgb = intPreferencesKey("accent_argb")
+        val accentSource = stringPreferencesKey("accent_source")
+        val accentCurated = stringPreferencesKey("accent_curated")
+        val accentCustomArgb = intPreferencesKey("accent_custom_argb")
+        val accentStrength = intPreferencesKey("accent_strength")
+        val accentRecents = stringPreferencesKey("accent_recents")
         val surfaceMaterial = intPreferencesKey("surface_material")
         val surfaceBlurPct = intPreferencesKey("surface_blur_pct")
         val surfaceNoisePct = intPreferencesKey("surface_noise_pct")
@@ -484,6 +550,32 @@ class Settings(ctx: Context) {
         val coingeckoKey = stringPreferencesKey("api_coingecko_key")
         val nasaKey = stringPreferencesKey("api_nasa_key")
         val githubUsername = stringPreferencesKey("api_github_username")
+        // v3 Track A (Mascot): all keys namespaced mascot_*. Defaults:
+        // mascot OFF (opt-in), Milo, roaming on, medium size, Find on,
+        // tips Rare, quiet hours 22:00-07:00. Dismiss sticks via
+        // mascotDismissed until "Bring back" clears it.
+        val mascotOn = booleanPreferencesKey("mascot_on")
+        val mascotCharacter = intPreferencesKey("mascot_character")
+        val mascotRoaming = booleanPreferencesKey("mascot_roaming")
+        val mascotSize = intPreferencesKey("mascot_size")
+        val mascotFindOn = booleanPreferencesKey("mascot_find_on")
+        val assistSearchCommands = booleanPreferencesKey("assist_search_commands")
+        val assistPrediction = booleanPreferencesKey("assist_prediction")
+        val assistChat = booleanPreferencesKey("assist_chat")
+        val assistLastUsedJson = stringPreferencesKey("assist_last_used_json")
+        val assistCountsJson = stringPreferencesKey("assist_counts_json")
+        val mascotTips = intPreferencesKey("mascot_tips")
+        val mascotQuietStart = intPreferencesKey("mascot_quiet_start")
+        val mascotQuietEnd = intPreferencesKey("mascot_quiet_end")
+        val mascotReduceMotion = booleanPreferencesKey("mascot_reduce_motion")
+        val mascotDismissed = booleanPreferencesKey("mascot_dismissed")
+        val mascotHomeX = floatPreferencesKey("mascot_home_x")
+        val mascotHomeY = floatPreferencesKey("mascot_home_y")
+        val mascotDontShowJson = stringPreferencesKey("mascot_dont_show_json")
+        val mascotMutedJson = stringPreferencesKey("mascot_muted_json")
+        val mascotLastNudgeMs = longPreferencesKey("mascot_last_nudge_ms")
+        // v3 Track B Dynamic Island master toggle.
+        val islandOn = booleanPreferencesKey("island_on")
     }
 
     /** Stale-type-safe preference read: any ClassCastException from a stale value falls back to default. */
@@ -522,6 +614,34 @@ class Settings(ctx: Context) {
         val rawLibraryView = p.safe(K.libraryDefaultView, "all")
         val libraryView =
             if (rawLibraryView == "categories" || rawLibraryView == "list") rawLibraryView else "all"
+        // 3.1 Phase B7 accent migration (additive, forward-only; old keys
+        // are kept, never dropped). New keys win; absent new keys with
+        // present old keys migrate from the old mode/argb; absent both
+        // means a fresh install, which defaults to Curated/Ember.
+        // Precedent for importing pure token logic: LayoutProfiles imports
+        // ui.reflowForGrid / ui.validateLayout the same way.
+        val hasNewAccent = try {
+            p[K.accentSource] != null
+        } catch (e: ClassCastException) {
+            false
+        }
+        val hasOldAccent = try {
+            p[K.accentMode] != null || p[K.accentArgb] != null
+        } catch (e: ClassCastException) {
+            false
+        }
+        val accentSel: AccentSelection = when {
+            hasNewAccent -> AccentSelection(
+                source = accentSourceFromName(p.safe(K.accentSource, "curated")),
+                curated = p.safe(K.accentCurated, "Ember"),
+                customArgb = p.safe(K.accentCustomArgb, 0),
+                strength = AccentStrength.entries.getOrNull(p.safe(K.accentStrength, 0).coerceIn(0, 2))
+                    ?: AccentStrength.SUBTLE,
+                recents = parseRecents(p.safe(K.accentRecents, "")),
+            )
+            hasOldAccent -> migrateAccent(p.safe(K.accentMode, 0), p.safe(K.accentArgb, 0))
+            else -> AccentSelection(AccentSource.CURATED, "Ember")
+        }
         return SettingsState(
                 // Minimal-only: any stored look name (old built-in, custom
                 // id) normalizes to Minimal on read, so no stale Look name
@@ -611,6 +731,11 @@ class Settings(ctx: Context) {
                 labelOverridesJson = p.safe(K.labelOverridesJson, "{}"),
                 accentMode = p.safe(K.accentMode, 0).coerceIn(0, 3),
                 accentArgb = p.safe(K.accentArgb, 0),
+                accentSource = accentSel.source.name,
+                accentCurated = accentSel.curated,
+                accentCustomArgb = accentSel.customArgb,
+                accentStrength = accentSel.strength.ordinal,
+                accentRecents = encodeRecents(accentSel.recents),
                 cornerDp = p.safe(K.cornerDp, -1).coerceIn(-1, 40),
                 surfaceMaterial = p.safe(K.surfaceMaterial, 2).coerceIn(0, 2),
                 surfaceBlurPct = p.safe(K.surfaceBlurPct, 60).coerceIn(0, 100),
@@ -700,6 +825,29 @@ class Settings(ctx: Context) {
                 githubUsername = p.safe(K.githubUsername, "Voidwalker-28")
                     .ifBlank { "Voidwalker-28" }
                     .let { if (isValidGithubUsername(it)) it else "Voidwalker-28" },
+                // v3 Track A (Mascot): stale-type-safe via safe(), same
+                // as every other field; corrupt values fall back here.
+                mascotOn = p.safe(K.mascotOn, false),
+                mascotCharacter = p.safe(K.mascotCharacter, 0).coerceIn(0, 1),
+                mascotRoaming = p.safe(K.mascotRoaming, true),
+                mascotSize = p.safe(K.mascotSize, 1).coerceIn(0, 2),
+                mascotFindOn = p.safe(K.mascotFindOn, true),
+                assistSearchCommands = p.safe(K.assistSearchCommands, true),
+                assistPrediction = p.safe(K.assistPrediction, true),
+                assistChat = p.safe(K.assistChat, true),
+                assistLastUsedJson = p.safe(K.assistLastUsedJson, "{}"),
+                assistCountsJson = p.safe(K.assistCountsJson, "{}"),
+                mascotTips = p.safe(K.mascotTips, 1).coerceIn(0, 2),
+                mascotQuietStart = p.safe(K.mascotQuietStart, 1320).coerceIn(0, 1439),
+                mascotQuietEnd = p.safe(K.mascotQuietEnd, 420).coerceIn(0, 1439),
+                mascotReduceMotion = p.safe(K.mascotReduceMotion, false),
+                mascotDismissed = p.safe(K.mascotDismissed, false),
+                mascotHomeX = p.safe(K.mascotHomeX, 0.85f).coerceIn(0f, 1f),
+                mascotHomeY = p.safe(K.mascotHomeY, 0.78f).coerceIn(0f, 1f),
+                mascotDontShowJson = p.safe(K.mascotDontShowJson, "[]"),
+                mascotMutedJson = p.safe(K.mascotMutedJson, "[]"),
+                mascotLastNudgeMs = p.safe(K.mascotLastNudgeMs, 0L).coerceAtLeast(0L),
+                islandOn = p.safe(K.islandOn, false),
         )
     }
 
@@ -841,8 +989,35 @@ class Settings(ctx: Context) {
     suspend fun setHapticStrength(v: Int) = update { it[K.hapticStrength] = v.coerceIn(0, 100) }
 
     // M5 Categories 1-7 typed setters (stale-type-safe via parse() coercions).
-    suspend fun setAccent(mode: Int, argb: Int) = update {
-        it[K.accentMode] = mode.coerceIn(0, 3); it[K.accentArgb] = argb
+    /**
+     * 3.1 Phase B7: write a full accent selection. New keys are
+     * authoritative; old mode/argb are kept as a best-effort mapping for
+     * backup round-trip (system seeds are unknown at write time, so a
+     * System selection maps to mode 1 / argb 0 — new keys still win).
+     */
+    suspend fun setAccentSelection(selection: AccentSelection) = update {
+        it[K.accentSource] = selection.source.name
+        it[K.accentCurated] = selection.curated
+        it[K.accentCustomArgb] = selection.customArgb
+        it[K.accentStrength] = selection.strength.ordinal.coerceIn(0, 2)
+        it[K.accentRecents] = encodeRecents(selection.recents)
+        when (selection.source) {
+            AccentSource.CURATED -> {
+                it[K.accentMode] = 1; it[K.accentArgb] = curatedArgb(selection.curated)
+            }
+            AccentSource.CUSTOM -> {
+                it[K.accentMode] = 2; it[K.accentArgb] = selection.customArgb
+            }
+            AccentSource.WALLPAPER -> {
+                it[K.accentMode] = 3; it[K.accentArgb] = 0
+            }
+            AccentSource.SYSTEM -> {
+                it[K.accentMode] = 1; it[K.accentArgb] = 0
+            }
+            AccentSource.DEFAULT -> {
+                it[K.accentMode] = 0; it[K.accentArgb] = 0
+            }
+        }
     }
     suspend fun setCornerDp(v: Int) = update { it[K.cornerDp] = v.coerceIn(-1, 40) }
     suspend fun setSurfaceMaterial(v: Int) = update { it[K.surfaceMaterial] = v.coerceIn(0, 2) }
@@ -959,10 +1134,61 @@ class Settings(ctx: Context) {
         }
     }
     suspend fun setCoingeckoKey(v: String) = update { it[K.coingeckoKey] = v.trim() }
+
+    // v3 Track B Dynamic Island master toggle (default OFF).
+    suspend fun setIslandOn(v: Boolean) = update { it[K.islandOn] = v }
     suspend fun setNasaKey(v: String) = update { it[K.nasaKey] = v.trim() }
     suspend fun setGithubUsername(v: String) = update {
         val cleaned = v.trim()
         it[K.githubUsername] = if (isValidGithubUsername(cleaned)) cleaned else "Voidwalker-28"
+    }
+
+    // v3 Track A (Mascot) setters. One setter per field, same pattern
+    // as every other setting; coercion mirrors the parse() clamps.
+    suspend fun setMascotOn(v: Boolean) = update { it[K.mascotOn] = v }
+    suspend fun setMascotCharacter(v: Int) = update { it[K.mascotCharacter] = v.coerceIn(0, 1) }
+    suspend fun setMascotRoaming(v: Boolean) = update { it[K.mascotRoaming] = v }
+    suspend fun setMascotSize(v: Int) = update { it[K.mascotSize] = v.coerceIn(0, 2) }
+    suspend fun setMascotFindOn(v: Boolean) = update { it[K.mascotFindOn] = v }
+    // 3.1 Phase F (F4): ledger switches + one-write usage recording.
+    suspend fun setAssistSearchCommands(v: Boolean) = update { it[K.assistSearchCommands] = v }
+    suspend fun setAssistPrediction(v: Boolean) = update { it[K.assistPrediction] = v }
+    suspend fun setAssistChat(v: Boolean) = update { it[K.assistChat] = v }
+    suspend fun setAssistLastUsedJson(v: String) = update { it[K.assistLastUsedJson] = v }
+    suspend fun setAssistCountsJson(v: String) = update { it[K.assistCountsJson] = v }
+    suspend fun recordAssistUse(feature: AssistFeatureId, nowMs: Long) = update {
+        val (lastUsed, counts) = recordAssistUse(
+            it[K.assistLastUsedJson] ?: "{}",
+            it[K.assistCountsJson] ?: "{}",
+            feature,
+            nowMs,
+        )
+        it[K.assistLastUsedJson] = lastUsed
+        it[K.assistCountsJson] = counts
+    }
+    suspend fun setMascotTips(v: Int) = update { it[K.mascotTips] = v.coerceIn(0, 2) }
+    suspend fun setMascotQuiet(startMin: Int, endMin: Int) = update {
+        it[K.mascotQuietStart] = startMin.coerceIn(0, 1439)
+        it[K.mascotQuietEnd] = endMin.coerceIn(0, 1439)
+    }
+    suspend fun setMascotReduceMotion(v: Boolean) = update { it[K.mascotReduceMotion] = v }
+    suspend fun setMascotDismissed(v: Boolean) = update { it[K.mascotDismissed] = v }
+    suspend fun setMascotHomeSpot(x: Float, y: Float) = update {
+        it[K.mascotHomeX] = x.coerceIn(0f, 1f)
+        it[K.mascotHomeY] = y.coerceIn(0f, 1f)
+    }
+    suspend fun setMascotDontShowJson(v: String) = update { it[K.mascotDontShowJson] = v }
+    suspend fun setMascotMutedJson(v: String) = update { it[K.mascotMutedJson] = v }
+    suspend fun setMascotLastNudgeMs(v: Long) = update { it[K.mascotLastNudgeMs] = v.coerceAtLeast(0L) }
+
+    /** Settings → Mascot → "Reset mascot tips & tutorials": clears
+     * don't-show-again tutorials, muted suggestions, and the nudge
+     * cooldown, so offers can be made again. Enabled/character/size
+     * and the dismiss flag are deliberately NOT cleared here. */
+    suspend fun resetMascotTips() = update {
+        it[K.mascotDontShowJson] = "[]"
+        it[K.mascotMutedJson] = "[]"
+        it[K.mascotLastNudgeMs] = 0L
     }
 
     /** Section defaults for Settings → "Reset to default" per section. */
@@ -973,7 +1199,10 @@ class Settings(ctx: Context) {
                 it[K.iconShape] = 1; it[K.iconSizeOverride] = -1; it[K.labelsOn] = true
                 it[K.labelSize] = 11; it[K.fontChoice] = 0
                 it[K.reduceEffects] = false; it[K.reduceMotion] = false
-                it[K.accentMode] = 0; it[K.accentArgb] = 0; it[K.cornerDp] = -1
+                it[K.accentMode] = 0; it[K.accentArgb] = 0
+                it[K.accentSource] = "curated"; it[K.accentCurated] = "Ember"
+                it[K.accentCustomArgb] = 0; it[K.accentStrength] = 0; it[K.accentRecents] = ""
+                it[K.cornerDp] = -1
                 it[K.labelMode] = "auto"
                 it[K.surfaceMaterial] = 2
                 it[K.surfaceBlurPct] = 60; it[K.surfaceNoisePct] = 0; it[K.shadowDp] = -1
@@ -1000,6 +1229,7 @@ class Settings(ctx: Context) {
                 it[K.pageIndicatorOn] = true; it[K.parallaxOn] = true
                 it[K.defaultPage] = 0; it[K.hiddenPagesJson] = ""
                 it[K.pageCount] = 0
+                it[K.islandOn] = false
                 it[K.colsLand] = -1; it[K.rowsLand] = -1; it[K.colsPort] = -1; it[K.rowsPort] = -1
                 it[K.colsTablet] = -1; it[K.rowsTablet] = -1
                 it[K.marginDp] = 16; it[K.cellSpacingDp] = 4; it[K.labelLines] = 1

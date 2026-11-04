@@ -20,6 +20,11 @@ data class ApiCacheRow(
     @PrimaryKey val key: String,
     val json: String,
     val updatedAtMs: Long,
+    // Coordination fix §5/§7: consecutive failed refreshes (default 0
+    // for pre-v6 rows via the migration). Maintained ONLY by
+    // ApiStore.refreshApi; diagnostics only — the card status line is
+    // driven by cache age, not by this counter.
+    val consecutiveFailures: Int = 0,
 )
 
 @Dao
@@ -45,6 +50,37 @@ object ApiCacheKeys {
     fun githubEvents(username: String): String = "github:events:${username.lowercase()}"
     fun currency(base: String): String = "currency:${base.lowercase()}"
     fun dictionary(word: String): String = "dictionary:${word.lowercase()}"
+}
+
+/**
+ * 3.1 Phase A2: one Diagnostics row per API (not per cache key):
+ * the last fetch outcome, so Device & Data can show what actually
+ * happened on a real network and the developer can confirm the Quote
+ * and NASA response shapes. [bodySnippet] holds the first 200 chars
+ * of the response body for parse errors ONLY, otherwise empty —
+ * never keys, tokens, or personal data (API bodies never contain
+ * request credentials; the snippet is still capped and
+ * parse-error-only by construction).
+ */
+@Entity(tableName = "api_diagnostics")
+data class ApiDiagnosticsRow(
+    @PrimaryKey val api: String, // ApiId.name
+    val resultClass: String, // ApiFailureClass.name, or "SUCCESS"
+    val httpCode: Int, // -1 when no HTTP response was received
+    val timeMs: Long,
+    val bodySnippet: String = "",
+)
+
+@Dao
+interface ApiDiagnosticsDao {
+    @Query("SELECT * FROM api_diagnostics WHERE api = :api LIMIT 1")
+    suspend fun get(api: String): ApiDiagnosticsRow?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(row: ApiDiagnosticsRow)
+
+    @Query("SELECT * FROM api_diagnostics ORDER BY api ASC")
+    suspend fun all(): List<ApiDiagnosticsRow>
 }
 
 /**
@@ -75,5 +111,31 @@ object ApiCachePolicy {
         if (row == null) return true
         val age = nowMs - row.updatedAtMs
         return age < 0 || age > maxAgeMs(api)
+    }
+}
+
+/**
+ * Coordination fix §7: typed card status (not stringly status), used
+ * by every API card's status line. Age ratio alone drives it — the
+ * consecutive-failure counter is diagnostics only, never UI — because
+ * worker cadence equals max age, so sustained failure necessarily ages
+ * the row past threshold. Dictionary is exempt by construction
+ * (maxAgeMs = Long.MAX_VALUE, so the ratio can never reach 2).
+ */
+sealed interface CardStatus {
+    data object Fresh : CardStatus
+    data object Stale : CardStatus
+    data class Expired(val lastUpdatedMs: Long) : CardStatus
+    data object EmptyOffline : CardStatus
+}
+
+fun cardStatus(api: ApiId, row: ApiCacheRow?, nowMs: Long): CardStatus {
+    if (row == null) return CardStatus.EmptyOffline
+    val maxAge = ApiCachePolicy.maxAgeMs(api)
+    val age = nowMs - row.updatedAtMs
+    return when {
+        age <= maxAge -> CardStatus.Fresh
+        age / maxAge < 2 -> CardStatus.Stale
+        else -> CardStatus.Expired(row.updatedAtMs)
     }
 }

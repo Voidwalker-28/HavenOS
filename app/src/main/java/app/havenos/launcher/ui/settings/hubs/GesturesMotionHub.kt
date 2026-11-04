@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -67,10 +66,14 @@ import app.havenos.launcher.data.iconSwipeActionName
 import app.havenos.launcher.data.parseGestures
 import app.havenos.launcher.data.parseIconSwipes
 import app.havenos.launcher.data.parseNavMap
+import app.havenos.launcher.restoreNavBarOnLaunch
 import app.havenos.launcher.isNavServiceEnabled
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import kotlin.math.abs
+import app.havenos.launcher.ui.glass.HavenDialog
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenSwitch
 import app.havenos.launcher.ui.settings.shell.SearchEntry
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.graphics.Color
@@ -205,7 +208,6 @@ fun GesturesMotionHubScreen(
     }
 
     LazyColumn(Modifier.fillMaxSize()) {
-        item { DsTopBar(onBack, "Gestures & motion") }
 
         item { DsSection("Device diagram") }
         item {
@@ -493,9 +495,9 @@ fun GesturesMotionHubScreen(
                 value = navValue,
                 help = "Edge swipes work in every app.",
                 trailing = {
-                    androidx.compose.material3.Switch(
+                    HavenSwitch(
                         checked = state.navGesturesOn,
-                        onCheckedChange = { on ->
+                        onChange = { on ->
                             scope.launch { settings.setNavGesturesOn(on) }
                         },
                     )
@@ -523,6 +525,30 @@ fun GesturesMotionHubScreen(
                     }
                 }
             }
+        }
+        // 3.1 A13: manual recovery when the bar is stuck hidden
+        // (crash/kill while hidden, service never reconnected).
+        // Turning Hide off first is what lets the restore stick:
+        // the launch-restore refuses while the settings still say
+        // hide, and a connected service would re-hide on next sync.
+        item {
+            DsRow(
+                title = "Restore navigation bar",
+                value = if (state.navHideBar) "Hide on" else "Hide off",
+                help = "Brings the system button bar back now and turns Hide off, so it stays back.",
+                trailing = {
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            settings.setNavHideBar(false)
+                            try {
+                                restoreNavBarOnLaunch(context, settings)
+                            } catch (t: Throwable) {
+                                // best-effort; the bar may already be back
+                            }
+                        }
+                    }) { Text("Restore", fontSize = 14.sp) }
+                },
+            )
         }
         item {
             DsSwitchRow(
@@ -694,45 +720,35 @@ fun GesturesMotionHubScreen(
     }
 
     pendingLock?.let { trigger ->
-        AlertDialog(
-            onDismissRequest = { pendingLock = null },
-            title = { Text("Lock screen") },
-            text = { Text("Locking needs device admin. You will be asked when it first runs.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    val map = gestures.toMutableMap()
-                    map[trigger] = "lock"
-                    scope.launch { settings.setGesturesJson(encodeGestures(map)) }
-                    pendingLock = null
-                }) { Text("Bind") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingLock = null }) { Text("Cancel") }
+        HavenDialog(
+            onDismiss = { pendingLock = null },
+            title = "Lock screen",
+            body = "Locking needs device admin. You will be asked when it first runs.",
+            dismissLabel = "Cancel",
+            confirmLabel = "Bind",
+            onConfirm = {
+                val map = gestures.toMutableMap()
+                map[trigger] = "lock"
+                scope.launch { settings.setGesturesJson(encodeGestures(map)) }
+                pendingLock = null
             },
         )
     }
 
     pendingMove?.let { (trigger, action, other) ->
-        AlertDialog(
-            onDismissRequest = { pendingMove = null },
-            title = { Text("Move action?") },
-            text = {
-                Text(
-                    "“${homeActionName(action)}” is also bound to " +
-                        "${homeTriggerName(other)}. Move it here?",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val map = gestures.toMutableMap()
-                    map[other] = "none"
-                    map[trigger] = action
-                    scope.launch { settings.setGesturesJson(encodeGestures(map)) }
-                    pendingMove = null
-                }) { Text("Move") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingMove = null }) { Text("Cancel") }
+        HavenDialog(
+            onDismiss = { pendingMove = null },
+            title = "Move action?",
+            body = "“${homeActionName(action)}” is also bound to " +
+                "${homeTriggerName(other)}. Move it here?",
+            dismissLabel = "Cancel",
+            confirmLabel = "Move",
+            onConfirm = {
+                val map = gestures.toMutableMap()
+                map[other] = "none"
+                map[trigger] = action
+                scope.launch { settings.setGesturesJson(encodeGestures(map)) }
+                pendingMove = null
             },
         )
     }
@@ -741,121 +757,122 @@ fun GesturesMotionHubScreen(
     if (addPickerOpen) {
         var query by remember { mutableStateOf("") }
         var picked by remember { mutableStateOf<String?>(null) }
-        AlertDialog(
-            onDismissRequest = { addPickerOpen = false },
-            title = { Text("Pick app") },
-            text = {
-                Column {
-                    TextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        singleLine = true,
-                        placeholder = { Text("Search apps") },
-                    )
-                    val shown = apps.filter {
-                        query.isBlank() || it.label.contains(query, ignoreCase = true)
-                    }.sortedBy { it.label }.take(60)
-                    LazyColumn(Modifier.height(320.dp)) {
-                        for (entry in shown) {
-                            item {
-                                Row(
-                                    Modifier.fillMaxWidth()
-                                        .clickable { picked = entry.pkg }
-                                        .padding(0.dp, 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    RadioButton(
-                                        selected = picked == entry.pkg,
-                                        onClick = { picked = entry.pkg },
-                                    )
-                                    Text(
-                                        entry.label,
-                                        fontSize = 15.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (picked != null) {
-                        Spacer(Modifier.height(8.dp))
-                        Text("Action for this icon:", fontSize = 14.sp)
-                        for (opt in ICON_SWIPE_ACTIONS) {
+        HavenGlassDialog(
+            onDismiss = { addPickerOpen = false },
+            title = "Pick app",
+            buttons = {
+                TextButton(onClick = { addPickerOpen = false }) { Text("Close") }
+            },
+            content = {
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    placeholder = { Text("Search apps") },
+                )
+                val shown = apps.filter {
+                    query.isBlank() || it.label.contains(query, ignoreCase = true)
+                }.sortedBy { it.label }.take(60)
+                LazyColumn(Modifier.height(320.dp)) {
+                    for (entry in shown) {
+                        item {
                             Row(
                                 Modifier.fillMaxWidth()
-                                    .clickable {
-                                        scope.launch {
-                                            val map = iconSwipes.toMutableMap()
-                                            if (opt == "none") map.remove(picked!!)
-                                            else map[picked!!] = opt
-                                            settings.setIconSwipesJson(encodeIconSwipes(map))
-                                        }
-                                        addPickerOpen = false
-                                    }
-                                    .padding(0.dp, 4.dp),
+                                    .clickable { picked = entry.pkg }
+                                    .padding(0.dp, 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                RadioButton(selected = false, onClick = {
-                                    scope.launch {
-                                        val map = iconSwipes.toMutableMap()
-                                        if (opt == "none") map.remove(picked!!)
-                                        else map[picked!!] = opt
-                                        settings.setIconSwipesJson(encodeIconSwipes(map))
-                                    }
-                                    addPickerOpen = false
-                                })
-                                Text(iconSwipeActionName(opt), fontSize = 15.sp)
+                                RadioButton(
+                                    selected = picked == entry.pkg,
+                                    onClick = { picked = entry.pkg },
+                                )
+                                Text(
+                                    entry.label,
+                                    fontSize = 15.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { addPickerOpen = false }) { Text("Close") }
+                if (picked != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Action for this icon:", fontSize = 14.sp)
+                    for (opt in ICON_SWIPE_ACTIONS) {
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    scope.launch {
+                                        // 3.1.1: no !! — a null pick skips
+                                        // the write instead of throwing.
+                                        val p = picked ?: return@launch
+                                        val map = iconSwipes.toMutableMap()
+                                        if (opt == "none") map.remove(p)
+                                        else map[p] = opt
+                                        settings.setIconSwipesJson(encodeIconSwipes(map))
+                                    }
+                                    addPickerOpen = false
+                                }
+                                .padding(0.dp, 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = false, onClick = {
+                                scope.launch {
+                                    // 3.1.1: no !! — see the row above.
+                                    val p = picked ?: return@launch
+                                    val map = iconSwipes.toMutableMap()
+                                    if (opt == "none") map.remove(p)
+                                    else map[p] = opt
+                                    settings.setIconSwipesJson(encodeIconSwipes(map))
+                                }
+                                addPickerOpen = false
+                            })
+                            Text(iconSwipeActionName(opt), fontSize = 15.sp)
+                        }
+                    }
+                }
             },
         )
     }
 
     // Change or remove one icon swipe.
     swipeActionTarget?.let { pkg ->
-        AlertDialog(
-            onDismissRequest = { swipeActionTarget = null },
-            title = { Text("Icon swipe action") },
-            text = {
-                Column {
-                    for (opt in ICON_SWIPE_ACTIONS) {
-                        Row(
-                            Modifier.fillMaxWidth()
-                                .clickable {
-                                    scope.launch {
-                                        val map = iconSwipes.toMutableMap()
-                                        if (opt == "none") map.remove(pkg) else map[pkg] = opt
-                                        settings.setIconSwipesJson(encodeIconSwipes(map))
-                                    }
-                                    swipeActionTarget = null
+        HavenGlassDialog(
+            onDismiss = { swipeActionTarget = null },
+            title = "Icon swipe action",
+            buttons = {
+                TextButton(onClick = { swipeActionTarget = null }) { Text("Close") }
+            },
+            content = {
+                for (opt in ICON_SWIPE_ACTIONS) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable {
+                                scope.launch {
+                                    val map = iconSwipes.toMutableMap()
+                                    if (opt == "none") map.remove(pkg) else map[pkg] = opt
+                                    settings.setIconSwipesJson(encodeIconSwipes(map))
                                 }
-                                .padding(0.dp, 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(
-                                selected = iconSwipes[pkg] == opt,
-                                onClick = {
-                                    scope.launch {
-                                        val map = iconSwipes.toMutableMap()
-                                        if (opt == "none") map.remove(pkg) else map[pkg] = opt
-                                        settings.setIconSwipesJson(encodeIconSwipes(map))
-                                    }
-                                    swipeActionTarget = null
-                                },
-                            )
-                            Text(iconSwipeActionName(opt), fontSize = 15.sp)
-                        }
+                                swipeActionTarget = null
+                            }
+                            .padding(0.dp, 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = iconSwipes[pkg] == opt,
+                            onClick = {
+                                scope.launch {
+                                    val map = iconSwipes.toMutableMap()
+                                    if (opt == "none") map.remove(pkg) else map[pkg] = opt
+                                    settings.setIconSwipesJson(encodeIconSwipes(map))
+                                }
+                                swipeActionTarget = null
+                            },
+                        )
+                        Text(iconSwipeActionName(opt), fontSize = 15.sp)
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { swipeActionTarget = null }) { Text("Close") }
             },
         )
     }

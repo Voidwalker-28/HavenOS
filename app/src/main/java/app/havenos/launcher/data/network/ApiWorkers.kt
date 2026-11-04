@@ -72,24 +72,60 @@ object ApiRefreshScheduler {
         ApiId.entries.filter { it != ApiId.DICTIONARY }
 
     /**
-     * Enqueue (KEEP) one unique periodic worker per API. Safe to call
+     * 3.1 A11 flow 16 + A12: what a toggle edit means for one API's
+     * worker. SCHEDULE = enabled with a cadence; CANCEL = disabled
+     * (cancelled outright, not left to no-op on its next run); NONE
+     * = no periodic work exists (dictionary, on demand only).
+     */
+    enum class ApiWorkerAction { SCHEDULE, CANCEL, NONE }
+
+    fun apiWorkerAction(api: ApiId, isEnabled: Boolean): ApiWorkerAction =
+        if (!isEnabled) ApiWorkerAction.CANCEL
+        else if (cadence(api) == null) ApiWorkerAction.NONE
+        else ApiWorkerAction.SCHEDULE
+
+    private fun enqueueApi(wm: WorkManager, api: ApiId, constraints: Constraints) {
+        val (interval, unit) = cadence(api) ?: return
+        val request = PeriodicWorkRequestBuilder<ApiRefreshWorker>(interval, unit)
+            .setConstraints(constraints)
+            .setBackoffCriteria(BackoffPolicy.LINEAR, 30, TimeUnit.MINUTES)
+            .setInputData(Data.Builder().putString(ApiRefreshWorker.KEY_API, api.name).build())
+            .build()
+        wm.enqueueUniquePeriodicWork(workName(api), ExistingPeriodicWorkPolicy.KEEP, request)
+    }
+
+    /** Apply one API's action (toggle-edit path): cancel or schedule just it. */
+    fun applyWorkerAction(context: Context, api: ApiId, isEnabled: Boolean) {
+        val wm = WorkManager.getInstance(context)
+        when (apiWorkerAction(api, isEnabled)) {
+            ApiWorkerAction.CANCEL -> wm.cancelUniqueWork(workName(api))
+            ApiWorkerAction.NONE -> Unit
+            ApiWorkerAction.SCHEDULE -> enqueueApi(
+                wm, api,
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+        }
+    }
+
+    /**
+     * Enqueue (KEEP) one unique periodic worker per ENABLED API, and
+     * CANCEL a disabled API's worker outright (3.1 A12). Safe to call
      * on every launch: KEEP never duplicates or resets an existing
      * schedule. Requires network; no charging/idle constraints, so a
-     * tablet on Wi-Fi still refreshes while idle.
+     * tablet on Wi-Fi still refreshes while idle. Workers still
+     * re-check their toggle at run time (refreshApi gates on it).
      */
-    fun scheduleAll(context: Context) {
+    fun scheduleAll(context: Context, isEnabled: (ApiId) -> Boolean = { true }) {
         val wm = WorkManager.getInstance(context)
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
         for (api in periodicApis) {
-            val (interval, unit) = cadence(api) ?: continue
-            val request = PeriodicWorkRequestBuilder<ApiRefreshWorker>(interval, unit)
-                .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.LINEAR, 30, TimeUnit.MINUTES)
-                .setInputData(Data.Builder().putString(ApiRefreshWorker.KEY_API, api.name).build())
-                .build()
-            wm.enqueueUniquePeriodicWork(workName(api), ExistingPeriodicWorkPolicy.KEEP, request)
+            if (!isEnabled(api)) {
+                wm.cancelUniqueWork(workName(api))
+                continue
+            }
+            enqueueApi(wm, api, constraints)
         }
     }
 }

@@ -1,5 +1,7 @@
 package app.havenos.launcher.data
 
+import app.havenos.launcher.ui.reflowForGrid
+import app.havenos.launcher.ui.validateLayout
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -67,6 +69,14 @@ data class CanonicalEntry(val id: String, val page: Int)
 data class LayoutProfiles(
     val canonical: List<CanonicalEntry> = emptyList(),
     val profiles: Map<WindowClass, Map<String, ProfilePlacement>> = emptyMap(),
+    /**
+     * Coordination fix §1: profiles whose stored placements are stale
+     * after a grid/density commit that did not rewrite them. Only grid
+     * commits set flags; a flag clears only when switch-time repair
+     * rewrites that profile. Persisted with the JSON form and in the
+     * profile_dirty table (Room v6); absent in old backups -> empty.
+     */
+    val dirty: Set<WindowClass> = emptySet(),
 ) {
     fun placementFor(windowClass: WindowClass, itemId: String): ProfilePlacement? =
         profiles[windowClass]?.get(itemId)
@@ -201,6 +211,47 @@ fun LayoutProfiles.withAppRemoved(itemId: String): LayoutProfiles =
         profiles = profiles.mapValues { (_, placed) -> placed.filterKeys { it != itemId } },
     )
 
+/**
+ * Coordination fix §1/§2: install membership. Canonical order ALWAYS
+ * gains the item (every profile derives from it on first use). A
+ * placement is written ONLY to the CURRENT profile and ONLY when
+ * [autoAdd] is on; a current profile that does not exist yet is left
+ * absent (it derives from the updated canonical order on first use, so
+ * the new item is included automatically). Other profiles are never
+ * touched here — a grid commit marks them dirty for switch-time repair
+ * instead. Returns [this] unchanged for a blank id or an item already
+ * in canonical order.
+ */
+fun LayoutProfiles.withAppInstalled(
+    itemId: String,
+    colSpan: Int,
+    rowSpan: Int,
+    autoAdd: Boolean,
+    current: WindowClass,
+    gridCells: (WindowClass) -> Pair<Int, Int>,
+): LayoutProfiles {
+    if (itemId.isBlank() || canonical.any { it.id == itemId }) return this
+    val targetPage = canonical.maxOfOrNull { it.page } ?: 0
+    val newCanonical = canonical + CanonicalEntry(itemId, targetPage)
+    if (!autoAdd) return copy(canonical = newCanonical)
+    val placed = profiles[current] ?: return copy(canonical = newCanonical)
+    val (cols, rows) = gridCells(current)
+    val colsU = cols * 2
+    val rowsU = rows * 2
+    var p = targetPage
+    var spot = firstFreeSpotInProfile(placed, p, colSpan, rowSpan, colsU, rowsU)
+    while (spot == null) {
+        p++
+        spot = firstFreeSpotInProfile(placed, p, colSpan, rowSpan, colsU, rowsU)
+        if (p > targetPage + 1000) break // corrupt grid guard; unreachable in practice
+    }
+    if (spot == null) return copy(canonical = newCanonical)
+    return copy(
+        canonical = newCanonical,
+        profiles = profiles + (current to placed + (itemId to ProfilePlacement(p, spot.first, spot.second, colSpan, rowSpan))),
+    )
+}
+
 /** One moved item in a "Sync layouts" preview. */
 data class SyncPreviewEntry(
     val itemId: String,
@@ -252,6 +303,73 @@ fun syncLayoutsFrom(
     gridCells: (WindowClass) -> Pair<Int, Int>,
 ): LayoutProfiles = syncLayoutsPreview(current, source, gridCells).second
 
+// ------------------------------------------------- coordination fix §1/§4
+// Profile scope: materialize, first-use gate, dirty repair. All pure.
+
+/**
+ * Overlay [placements] onto [canonicalItems]: a placed item takes the
+ * profile's page/col/row/span, keeping kind/payload/flowOrder; an item
+ * with no placement keeps its own stored coordinates. The result goes
+ * to [validateLayout] (callers) — materialize itself never invents a
+ * position, it only applies the profile's.
+ */
+fun materializeProfile(
+    canonicalItems: List<HomeItem>,
+    placements: Map<String, ProfilePlacement>,
+): List<HomeItem> = canonicalItems.map { item ->
+    val p = placements[item.id] ?: return@map item
+    item.copy(page = p.page, col = p.col, row = p.row, colSpan = p.colSpan, rowSpan = p.rowSpan)
+}
+
+/**
+ * First-use sequence (§4): derive -> materialize -> validate -> gate.
+ * The gate passes when the layout is valid, or when the ONLY
+ * out-of-bounds items are oversize singles (span wider/taller than the
+ * grid — deriveProfile's oversize guard, kept with span intact because
+ * moving one would resize the widget against its span). Any other
+ * invalidity goes through [reflowForGrid] before store, which
+ * preserves valid items exactly. Never re-derives a dirty profile:
+ * dirty is repaired only by [repairProfileItems].
+ */
+fun firstUseProfileItems(
+    items: List<HomeItem>,
+    colsCells: Int,
+    rowsCells: Int,
+): List<HomeItem> {
+    if (items.isEmpty() || colsCells <= 0 || rowsCells <= 0) return items
+    val colsU = colsCells * 2
+    val rowsU = rowsCells * 2
+    val derived = deriveProfile(canonicalOrderOf(items), spansOf(items), colsCells, rowsCells)
+    val materialized = materializeProfile(items, derived)
+    val validation = validateLayout(materialized, colsU, rowsU)
+    if (validation.isValid) return materialized
+    val sanctionedOnly = validation.overlaps.isEmpty() &&
+        validation.outOfBounds.all { it.colSpan > colsU || it.rowSpan > rowsU }
+    if (sanctionedOnly) return materialized
+    return reflowForGrid(materialized, colsU, rowsU).items
+}
+
+/**
+ * Switch-time dirty repair (§1): reflow the stored placements under
+ * the new grid, then gate. Returns the repaired items plus whether the
+ * gate passed (overlaps empty, nothing out of bounds — reflow shrinks
+ * oversize spans to the grid, so a repaired profile is fully valid).
+ * On gate failure the caller must NOT store and must NOT clear the
+ * dirty flag; the next switch retries.
+ */
+fun repairProfileItems(
+    materialized: List<HomeItem>,
+    colsCells: Int,
+    rowsCells: Int,
+    visiblePages: List<Int>? = null,
+): Pair<List<HomeItem>, Boolean> {
+    if (materialized.isEmpty() || colsCells <= 0 || rowsCells <= 0) return materialized to true
+    val colsU = colsCells * 2
+    val rowsU = rowsCells * 2
+    val repaired = reflowForGrid(materialized, colsU, rowsU, visiblePages).items
+    return repaired to validateLayout(repaired, colsU, rowsU).isValid
+}
+
 // ------------------------------------------------------------ persistence
 // JSON form (never throws on either side; bad input -> empty profiles):
 // {"canonical":[{"id":..,"page":..}],"profiles":{"COMPACT":{"id":{"page":..,"col":..,"row":..,"colSpan":..,"rowSpan":..}}}}
@@ -274,6 +392,9 @@ fun LayoutProfiles.toJson(): String {
         profObj.put(windowClass.name, mapObj)
     }
     root.put("profiles", profObj)
+    val dirtyArr = JSONArray()
+    for (windowClass in dirty) dirtyArr.put(windowClass.name)
+    root.put("dirty", dirtyArr)
     return root.toString()
 }
 
@@ -309,7 +430,18 @@ fun parseLayoutProfiles(json: String): LayoutProfiles {
                 profMap[windowClass] = map
             }
         }
-        LayoutProfiles(canon, profMap)
+        val dirtySet = mutableSetOf<WindowClass>()
+        val dirtyArr = root.optJSONArray("dirty")
+        if (dirtyArr != null) {
+            for (i in 0 until dirtyArr.length()) {
+                try {
+                    dirtySet += WindowClass.valueOf(dirtyArr.optString(i, ""))
+                } catch (t: Throwable) {
+                    // Unknown class in an old/newer backup: skip, never fail.
+                }
+            }
+        }
+        LayoutProfiles(canon, profMap, dirtySet)
     } catch (t: Throwable) {
         LayoutProfiles()
     }

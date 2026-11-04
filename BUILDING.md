@@ -91,3 +91,20 @@ require uninstalling first (Android rejects the signature mismatch).
 Before publishing, rename the built APK to `HavenOS-vc<versionCode>.apk`
 (e.g. `HavenOS-vc10.apk`) so the file name itself identifies the build.
 See [RELEASING.md](RELEASING.md).
+
+## Retracing a release stack trace
+
+Release builds are minified with R8, so a crash report shows obfuscated
+names. Every release build keeps its mapping file (starting with
+versionCode 14) — a trace's `r8-map-id` identifies the build, and the
+mapping retrace gives back the original class, method and line:
+
+```sh
+# R8 retrace (bundled with Android Gradle Plugin / R8):
+java -cp <r8.jar> com.android.tools.r8.retrace.Retrace \
+  release-artifacts/mapping-<versionCode>.txt < stacktrace.txt
+```
+
+Earlier releases have no retained mapping: a vc13 (or older) trace
+cannot be retraced to exact source lines — only the exception class
+and the crash family can be identified from it.

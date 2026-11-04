@@ -47,6 +47,8 @@ import app.havenos.launcher.data.HomeItem
 import app.havenos.launcher.data.ItemKind
 import app.havenos.launcher.theme.GlassSurface
 import app.havenos.launcher.theme.LocalPalette
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -630,16 +632,18 @@ fun BatteryWidget(modifier: Modifier = Modifier) {
 @Composable
 fun QuickSearchWidget(onOpenSearch: () -> Unit, editMode: Boolean = false, modifier: Modifier = Modifier) {
     val palette = LocalPalette.current
-    WidgetFrame(modifier = modifier) {
-        Box(
-            Modifier.fillMaxSize().clip(RoundedCornerShape(50))
-                .background(palette.surface.copy(alpha = 0.55f))
-                .then(if (editMode) Modifier else Modifier.clickable { onOpenSearch() })
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.CenterStart,
-        ) {
+    // 3.1 Phase D: the widget IS one Glass1 card matching the Today cards.
+    // WidgetFrame is the home Glass1 realization (GlassSurface, 28dp,
+    // 16dp padding — the same frame the Today cards use); the old inner
+    // flat pill (50-radius, surface 55%) broke that match, so it is gone
+    // and the row sits directly in the frame. Tint-only glass() would
+    // lose blur over wallpaper (Phase C C3), so no GlassCard here.
+    WidgetFrame(
+        modifier = modifier.then(if (editMode) Modifier else Modifier.clickable { onOpenSearch() }),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("⌕", color = palette.muted, fontSize = 18.sp)
+                HavenIconImage(HavenIcon.Search, null, tint = palette.muted, size = 20.dp)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     "Search apps, settings…", color = palette.muted, fontSize = 13.sp,

@@ -1,5 +1,6 @@
 package app.havenos.launcher.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -11,16 +12,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -36,8 +41,17 @@ import app.havenos.launcher.data.AppEntry
 import app.havenos.launcher.data.Folder
 import app.havenos.launcher.data.HomeItem
 import app.havenos.launcher.data.ItemKind
+import androidx.compose.ui.graphics.Color
 import app.havenos.launcher.theme.GlassSurface
+import app.havenos.launcher.theme.LocalAccentRoles
 import app.havenos.launcher.theme.LocalPalette
+import app.havenos.launcher.ui.glass.HavenDialogFilledButton
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenMenu
+import app.havenos.launcher.ui.glass.HavenMenuItem
+import app.havenos.launcher.ui.glass.HavenSnackbar
+import app.havenos.launcher.ui.glass.vector
 import kotlin.math.roundToInt
 
 /**
@@ -84,59 +98,9 @@ const val FOLDER_HOLD_MS = 400L
 /** Edge hold that turns the page (implemented in PagedHome). */
 const val EDGE_TURN_MS = 600L
 
-/** Undo/redo depth (Doc 1 §3.7). */
-const val EDIT_UNDO_MAX = 50
-
 /** Destructive-action snackbar lifetime (Doc 1 §3.7). */
 const val EDIT_UNDO_SNACKBAR_MS = 5_000L
 
-// ---------------------------------------------------------------------------
-// Undo / redo — one stack object, shared by edit mode and the host.
-// The host owns it (remember { EditUndoStack() }); the Settings panel
-// keeps its existing Before/Changes path for settings values, and the
-// host's layout snapshots are the shared undo currency for layout.
-// Snapshots are opaque strings (snapshotJson); this class never parses.
-// ---------------------------------------------------------------------------
-
-class EditUndoStack {
-    private val undo = ArrayDeque<String>()
-    private val redo = ArrayDeque<String>()
-
-    val canUndo: Boolean get() = undo.isNotEmpty()
-    val canRedo: Boolean get() = redo.isNotEmpty()
-    val depth: Int get() = undo.size
-
-    /** Record the pre-change snapshot. Any new change clears the redo stack. */
-    fun push(before: String) {
-        undo.addLast(before)
-        while (undo.size > EDIT_UNDO_MAX) undo.removeFirst()
-        redo.clear()
-    }
-
-    /**
-     * Undo: returns the snapshot to restore, pushing [current] onto the
-     * redo stack. Null when there is nothing to undo.
-     */
-    fun undo(current: String): String? {
-        val snap = undo.removeLastOrNull() ?: return null
-        redo.addLast(current)
-        while (redo.size > EDIT_UNDO_MAX) redo.removeFirst()
-        return snap
-    }
-
-    /** Redo: the mirror of [undo]. Null when there is nothing to redo. */
-    fun redo(current: String): String? {
-        val snap = redo.removeLastOrNull() ?: return null
-        undo.addLast(current)
-        while (undo.size > EDIT_UNDO_MAX) undo.removeFirst()
-        return snap
-    }
-
-    fun clear() {
-        undo.clear()
-        redo.clear()
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Snap math (Doc 1 §3.3). Coordinates are half-cell units; cellW/cellH
@@ -318,6 +282,10 @@ fun EditToolbar(
     expanded: Boolean,
     canUndo: Boolean,
     canRedo: Boolean,
+    // 3.1 A9: what Undo/Redo will undo ("Undo density grid reset");
+    // plain "Undo"/"Redo" when the top frame carries no label.
+    undoLabel: String = "Undo",
+    redoLabel: String = "Redo",
     snapOn: Boolean,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
@@ -336,7 +304,6 @@ fun EditToolbar(
     onResetPage: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val palette = LocalPalette.current
     var overflowOpen by remember { mutableStateOf(false) }
     var addOpen by remember { mutableStateOf(false) }
     GlassSurface(shape = RoundedCornerShape(50), modifier = modifier) {
@@ -348,80 +315,116 @@ fun EditToolbar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            EditToolButton("↩", "Undo", expanded, enabled = canUndo, onClick = onUndo)
-            EditToolButton("↪", "Redo", expanded, enabled = canRedo, onClick = onRedo)
-            // Snap: labelled "Snap to grid" with icon + tick state (Doc 1 §3.3).
-            TextButton(
-                onClick = onSnapToggle,
-                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-            ) {
-                Text(
-                    if (expanded) "Snap to grid ${if (snapOn) "✓" else "○"}" else if (snapOn) "⊞✓" else "⊞",
-                    color = palette.onSurface,
-                    fontSize = 13.sp,
-                    fontWeight = if (snapOn) FontWeight.Bold else FontWeight.Normal,
+            EditToolButton(HavenIcon.Undo, undoLabel, expanded, enabled = canUndo, onClick = onUndo)
+            EditToolButton(HavenIcon.Redo, redoLabel, expanded, enabled = canRedo, onClick = onRedo)
+            // Snap (Doc 1 §3.3): Grid icon + label, accent-soft when on,
+            // check tick when on. The off state needs no marker — the
+            // absence of the accent-soft background IS the off state.
+            EditToolButton(
+                HavenIcon.Grid, "Snap to grid", expanded, active = snapOn,
+                trailingIcon = if (snapOn) HavenIcon.Check else null, onClick = onSnapToggle,
+            )
+            EditGroupDivider()
+            Box {
+                EditToolButton(HavenIcon.Plus, "Add", expanded, onClick = { addOpen = true })
+                HavenMenu(
+                    expanded = addOpen,
+                    onDismiss = { addOpen = false },
+                    items = listOf(
+                        HavenMenuItem(HavenIcon.Apps, "Widget") { onAddWidget() },
+                        HavenMenuItem(HavenIcon.Layers, "Page") { onAddPage() },
+                        HavenMenuItem(HavenIcon.Grid, "Folder") { onAddFolder() },
+                    ),
                 )
             }
+            EditToolButton(HavenIcon.Layers, "Pages", expanded, onClick = onPages)
+            EditToolButton(HavenIcon.Image, "Wallpaper", expanded, onClick = onWallpaper)
+            EditToolButton(HavenIcon.Eye, "Look", expanded, onClick = onLook)
+            EditToolButton(HavenIcon.Moon, "Calm", expanded, onClick = onCalmEditor)
+            EditToolButton(HavenIcon.Gear, "Settings", expanded, onClick = onSettings)
+            EditGroupDivider()
+            EditToolButton(HavenIcon.Check, "Done", expanded, onClick = onDone)
             Box {
-                TextButton(
-                    onClick = { addOpen = true },
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) {
-                    Text(
-                        if (expanded) "+ Add" else "+",
-                        color = palette.onSurface,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                DropdownMenu(expanded = addOpen, onDismissRequest = { addOpen = false }) {
-                    DropdownMenuItem(text = { Text("Widget") }, onClick = { addOpen = false; onAddWidget() })
-                    DropdownMenuItem(text = { Text("Page") }, onClick = { addOpen = false; onAddPage() })
-                    DropdownMenuItem(text = { Text("Folder") }, onClick = { addOpen = false; onAddFolder() })
-                }
-            }
-            EditToolButton("▦", "Pages", expanded, onClick = onPages)
-            EditToolButton("▣", "Wallpaper", expanded, onClick = onWallpaper)
-            EditToolButton("◐", "Look", expanded, onClick = onLook)
-            EditToolButton("☾", "Calm", expanded, onClick = onCalmEditor)
-            EditToolButton("⚙", "Settings", expanded, onClick = onSettings)
-            EditToolButton("✓", "Done", expanded, onClick = onDone)
-            Box {
-                TextButton(
-                    onClick = { overflowOpen = true },
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) {
-                    Text("⋮", color = palette.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                }
-                DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
-                    DropdownMenuItem(text = { Text("Revert session") }, onClick = { overflowOpen = false; onRevertSession() })
-                    DropdownMenuItem(text = { Text("Restore layout…") }, onClick = { overflowOpen = false; onRestoreLayout() })
-                    DropdownMenuItem(text = { Text("Reset page") }, onClick = { overflowOpen = false; onResetPage() })
-                }
+                EditToolButton(HavenIcon.Menu, "More", expanded, onClick = { overflowOpen = true })
+                HavenMenu(
+                    expanded = overflowOpen,
+                    onDismiss = { overflowOpen = false },
+                    items = listOf(
+                        HavenMenuItem(HavenIcon.Undo, "Revert session") { onRevertSession() },
+                        HavenMenuItem(HavenIcon.Layers, "Restore layout…") { onRestoreLayout() },
+                        HavenMenuItem(HavenIcon.Close, "Reset page") { onResetPage() },
+                    ),
+                )
             }
         }
     }
 }
 
+/** Hairline divider between the toolbar's Left/Center/Right groups. */
+@Composable
+private fun EditGroupDivider() {
+    val palette = LocalPalette.current
+    Box(
+        Modifier
+            .width(1.dp)
+            .height(32.dp)
+            .background(palette.onSurface.copy(alpha = 0.12f)),
+    )
+}
+
+/**
+ * 3.1 Phase C: toolbar button — icon + label when expanded, icon only
+ * when collapsed; [active] tools (Snap) sit on an accent-soft pill.
+ * The accessibility label is always the full label (3.1 A9), so
+ * TalkBack reads what the button will do even when collapsed.
+ */
 @Composable
 private fun EditToolButton(
-    icon: String,
+    icon: HavenIcon,
     label: String,
     expanded: Boolean,
     enabled: Boolean = true,
+    active: Boolean = false,
+    trailingIcon: HavenIcon? = null,
     onClick: () -> Unit,
 ) {
     val palette = LocalPalette.current
+    val roles = LocalAccentRoles.current
+    val tint = if (active) Color(roles.accent) else palette.onSurface
     TextButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .then(
+                if (active) {
+                    Modifier.clip(RoundedCornerShape(50))
+                        .background(Color(roles.accentContainer))
+                } else Modifier,
+            )
+            .semantics { contentDescription = label },
     ) {
-        Text(
-            if (expanded) "$icon $label" else icon,
-            color = palette.onSurface,
-            fontSize = 13.sp,
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                icon.vector(),
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(16.dp),
+            )
+            if (expanded) {
+                Text(label, color = tint, fontSize = 13.sp)
+            }
+            if (trailingIcon != null) {
+                Icon(
+                    trailingIcon.vector(),
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(13.dp),
+                )
+            }
+        }
     }
 }
 
@@ -480,67 +483,64 @@ fun EditContextBar(
                 )
             }
             if (canResize) {
-                TextButton(
-                    onClick = onResize,
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) { Text("Resize", color = palette.onSurface, fontSize = 13.sp) }
+                EditContextButton(HavenIcon.Grid, "Resize", onResize)
             }
-            TextButton(
-                onClick = onRemove,
-                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-            ) {
-                Text(
-                    if (selectedCount > 1) "Remove ($selectedCount)" else "Remove",
-                    color = palette.onSurface,
-                    fontSize = 13.sp,
-                )
-            }
-            TextButton(
-                onClick = onMoveToPage,
-                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-            ) { Text("Move to page", color = palette.onSurface, fontSize = 13.sp) }
+            EditContextButton(
+                HavenIcon.Close,
+                if (selectedCount > 1) "Remove ($selectedCount)" else "Remove",
+                onRemove,
+            )
+            EditContextButton(HavenIcon.ChevronRight, "Move to page", onMoveToPage)
             if (isWidget) {
-                TextButton(
-                    onClick = onDuplicate,
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) { Text("Duplicate", color = palette.onSurface, fontSize = 13.sp) }
+                EditContextButton(HavenIcon.Plus, "Duplicate", onDuplicate)
             }
             // M10 Level 2: Replace (widgets only) opens the widget
             // sheet in replace mode — same position/size when the new
             // widget fits, nearest free spot otherwise, never a
             // silent drop (see the host's replaceWidget).
             if (canReplace) {
-                TextButton(
-                    onClick = onReplace,
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) { Text("Replace", color = palette.onSurface, fontSize = 13.sp) }
+                EditContextButton(HavenIcon.Apps, "Replace", onReplace)
             }
             if (isWidget || isFolder) {
-                TextButton(
-                    onClick = onItemSettings,
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) { Text("Item settings", color = palette.onSurface, fontSize = 13.sp) }
+                EditContextButton(HavenIcon.Gear, "Item settings", onItemSettings)
             }
-            TextButton(
-                onClick = onSelectMore,
-                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-            ) { Text("Select more", color = palette.onSurface, fontSize = 13.sp) }
+            EditContextButton(HavenIcon.Check, "Select more", onSelectMore)
             if (isSingleApp) {
-                TextButton(
-                    onClick = onAddToDock,
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) { Text("Add to dock", color = palette.onSurface, fontSize = 13.sp) }
-                TextButton(
-                    onClick = onHide,
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) { Text("Hide", color = palette.onSurface, fontSize = 13.sp) }
+                EditContextButton(HavenIcon.Layers, "Add to dock", onAddToDock)
+                EditContextButton(HavenIcon.Eye, "Hide", onHide)
                 if (isUserApp) {
-                    TextButton(
-                        onClick = onUninstall,
-                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                    ) { Text("Uninstall", color = palette.onSurface, fontSize = 13.sp) }
+                    EditContextButton(HavenIcon.Close, "Uninstall", onUninstall, danger = true)
                 }
             }
+        }
+    }
+}
+
+/** 3.1 Phase C: context-bar button — icon + label, same style as the toolbar. */
+@Composable
+private fun EditContextButton(
+    icon: HavenIcon,
+    label: String,
+    onClick: () -> Unit,
+    danger: Boolean = false,
+) {
+    val palette = LocalPalette.current
+    val tint = if (danger) MaterialTheme.colorScheme.error else palette.onSurface
+    TextButton(
+        onClick = onClick,
+        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                icon.vector(),
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(label, color = tint, fontSize = 13.sp)
         }
     }
 }
@@ -566,14 +566,15 @@ fun EditHintChip(onDismiss: () -> Unit, modifier: Modifier = Modifier) {
                 color = palette.onSurface,
                 fontSize = 12.sp,
             )
-            Text(
-                "✕",
-                color = palette.onSurface,
-                fontSize = 12.sp,
+            Icon(
+                HavenIcon.Close.vector(),
+                contentDescription = "Dismiss",
+                tint = palette.onSurface,
                 modifier = Modifier
                     .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                     .clickable { onDismiss() }
-                    .padding(8.dp),
+                    .padding(8.dp)
+                    .size(16.dp),
             )
         }
     }
@@ -586,22 +587,15 @@ fun EditHintChip(onDismiss: () -> Unit, modifier: Modifier = Modifier) {
 
 @Composable
 fun EditUndoSnackbar(message: String, onUndo: () -> Unit, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
-    val palette = LocalPalette.current
-    GlassSurface(shape = RoundedCornerShape(50), modifier = modifier) {
-        Row(
-            Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(message, color = palette.onSurface, fontSize = 13.sp, modifier = Modifier.weight(1f, fill = false))
-            TextButton(onClick = onUndo, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) {
-                Text("Undo", color = palette.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            }
-            TextButton(onClick = onDismiss, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) {
-                Text("✕", color = palette.onSurface, fontSize = 13.sp)
-            }
-        }
-    }
+    // 3.1 Phase C: the Phase B snackbar (same anatomy: message +
+    // Undo + dismiss, Glass3 pill, 48dp). The host's 5s timer is untouched.
+    HavenSnackbar(
+        message = message,
+        actionLabel = "Undo",
+        onAction = onUndo,
+        onDismiss = onDismiss,
+        modifier = modifier,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -628,50 +622,47 @@ fun CalmEditorDialog(
         val rest = apps.filter { it.key !in picked }.sortedBy { it.label }
         pickedFirst + rest
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Calm favorites") },
-        text = {
-            Column {
-                Text(
-                    "Pick up to 8 favorites for Calm. This edits Calm only — it never changes the home layout.",
-                    color = palette.muted,
-                    fontSize = 13.sp,
-                )
-                Spacer(Modifier.height(8.dp))
-                LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    items(ordered, key = { it.key }) { entry ->
-                        val selected = entry.key in picked
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    picked = when {
-                                        selected -> picked - entry.key
-                                        picked.size >= 8 -> picked
-                                        else -> picked + entry.key
-                                    }
+    HavenGlassDialog(
+        onDismiss = onDismiss,
+        title = "Calm favorites",
+        buttons = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+            HavenDialogFilledButton(label = "Save", onClick = { onSave(picked) })
+        },
+        content = {
+            Text(
+                "Pick up to 8 favorites for Calm. This edits Calm only — it never changes the home layout.",
+                color = palette.muted,
+                fontSize = 13.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(ordered, key = { it.key }) { entry ->
+                    val selected = entry.key in picked
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                picked = when {
+                                    selected -> picked - entry.key
+                                    picked.size >= 8 -> picked
+                                    else -> picked + entry.key
                                 }
-                                .padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Text(
-                                if (selected) "☑" else "☐",
-                                color = palette.accent,
-                                fontSize = 16.sp,
-                            )
-                            Text(entry.label, color = palette.onSurface, fontSize = 14.sp)
-                        }
+                            }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            (if (selected) HavenIcon.CheckBoxOn else HavenIcon.CheckBoxOff).vector(),
+                            contentDescription = null,
+                            tint = palette.accent,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(entry.label, color = palette.onSurface, fontSize = 14.sp)
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(picked) }) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
 }

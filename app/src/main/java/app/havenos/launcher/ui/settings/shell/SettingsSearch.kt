@@ -13,13 +13,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,9 +33,21 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.havenos.launcher.theme.LocalFont
+import app.havenos.launcher.theme.LocalPalette
+import app.havenos.launcher.ui.glass.GlassCard
+import app.havenos.launcher.ui.glass.GlassLevel
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
+import app.havenos.launcher.ui.glass.HavenRadii
+import app.havenos.launcher.ui.glass.HavenSlider
+import app.havenos.launcher.ui.glass.HavenSpacing
+import app.havenos.launcher.ui.glass.HavenSwitch
+import app.havenos.launcher.ui.glass.glass
 
 // ---------------------------------------------------------------------------
 // M6 search infra (v2 §8). Local fuzzy index only — no network, no
@@ -231,22 +240,45 @@ fun rememberRecentSearchQueries(): RecentSearchQueries {
     return remember { RecentSearchQueries(context.applicationContext) }
 }
 
-/** Search field (v2 §5 placeholder, verbatim). */
+/** Search field (v2 §5 placeholder, verbatim): filled glass, search icon, copy unchanged. */
 @Composable
 fun SettingsSearchField(
     query: String,
     onQueryChange: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
-        placeholder = {
-            Text(text = "Search settings or try 'bigger icons'")
-        },
-        singleLine = true,
-        modifier = modifier.fillMaxWidth(),
-    )
+    val palette = LocalPalette.current
+    Box(
+        modifier
+            .fillMaxWidth()
+            .glass(GlassLevel.GLASS2, HavenRadii.controlShape())
+            .padding(horizontal = HavenSpacing.s16, vertical = HavenSpacing.s12),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            HavenIconImage(HavenIcon.Search, null, tint = palette.muted, size = 20.dp)
+            Spacer(Modifier.size(HavenSpacing.s8))
+            Box(Modifier.weight(1f)) {
+                if (query.isEmpty()) {
+                    Text(
+                        text = "Search settings or try 'bigger icons'",
+                        color = palette.muted,
+                        fontSize = 16.sp,
+                    )
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        fontFamily = LocalFont.current,
+                        fontSize = 16.sp,
+                        color = palette.onSurface,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
 }
 
 /** Compact inline switch for a result row. */
@@ -261,14 +293,7 @@ fun InlineSwitch(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(ShellSpacing.s8),
     ) {
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = tokens.accent,
-            ),
-        )
+        HavenSwitch(checked = checked, onChange = onCheckedChange)
         Text(
             text = label,
             style = ShellText.help.copy(fontFamily = LocalFont.current),
@@ -298,18 +323,14 @@ fun InlineSlider(
     val tokens = LocalShellTokens.current
     var drag by remember { mutableStateOf(value) }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Slider(
+        HavenSlider(
             value = drag,
-            onValueChange = { drag = it },
-            onValueChangeFinished = { onCommit(drag) },
             valueRange = range,
             steps = 0,
-            colors = SliderDefaults.colors(
-                thumbColor = tokens.accent,
-                activeTrackColor = tokens.accent,
-                inactiveTrackColor = tokens.accent.copy(alpha = 0.24f),
-            ),
+            onValueChange = { drag = it },
+            onCommit = { onCommit(drag) },
             modifier = Modifier.weight(1f),
+            valueText = valueText,
         )
         Spacer(Modifier.width(ShellSpacing.s8))
         Text(
@@ -332,8 +353,11 @@ fun SearchResultRow(
 ) {
     val tokens = LocalShellTokens.current
     val control = SettingsSearchControls.controlFor(entry.route)
-    ShellCard {
-        Column(verticalArrangement = Arrangement.spacedBy(ShellSpacing.s8)) {
+    GlassCard(shape = HavenRadii.groupShape(), modifier = Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.fillMaxWidth().padding(HavenSpacing.s16),
+            verticalArrangement = Arrangement.spacedBy(ShellSpacing.s8),
+        ) {
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -347,7 +371,7 @@ fun SearchResultRow(
                     text = entry.title,
                     style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
                     color = tokens.textPrimary,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(

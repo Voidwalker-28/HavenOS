@@ -160,6 +160,24 @@ fun scrubberLetters(groups: List<Pair<Char, List<LibraryApp>>>): List<Char> =
     groups.map { it.first }
 
 /**
+ * 3.1 Phase C (C2): case-insensitive match spans of [query] inside
+ * [text], for search-result highlighting. Non-overlapping, in order;
+ * empty when the query is blank or never occurs.
+ */
+fun matchSpans(text: String, query: String): List<IntRange> {
+    if (query.isBlank()) return emptyList()
+    val spans = mutableListOf<IntRange>()
+    var from = 0
+    while (true) {
+        val idx = text.indexOf(query, from, ignoreCase = true)
+        if (idx < 0) break
+        spans.add(idx until idx + query.length)
+        from = idx + query.length
+    }
+    return spans
+}
+
+/**
  * The letter at vertical position [y] in a strip of height [height].
  * [letters] is the full strip (A–Z + '#'); positions outside the strip
  * clamp to the first / last letter. Null when the strip is empty or

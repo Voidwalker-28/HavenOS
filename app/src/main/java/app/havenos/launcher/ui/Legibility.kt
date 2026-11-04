@@ -271,27 +271,28 @@ fun cellStatsFor(samples: FloatArray): CellStats {
 }
 
 /**
- * Downsample [bitmap] to ~32px wide (aspect preserved) and compute one
- * [CellStats] per cell of a [cols] × [rows] grid over it. Runs on
- * [Dispatchers.Default] — never call this on the main thread, and never
- * during scrolling. A null bitmap (e.g. system wallpaper unreadable)
- * yields mid-grey cells (luminance 0.5, variance 0), for which Auto
- * picks near-black text without a pill — a safe, legible default.
- *
- * Recompute triggers (callers): wallpaper change, dim change, mode
- * change. Dim is applied by the caller scaling luminance toward black
- * before calling [labelStyleFor]; this function reports the raw
- * wallpaper so one cached sample serves every dim level.
+ * 3.1 A12: the downsampled luminance map for one wallpaper — the
+ * expensive half of [analyzeWallpaper], split out so it is cached
+ * ONCE per wallpaper while the cheap per-cell aggregation reruns on
+ * grid change. Row-major, [width] × [height] (width is always
+ * [LEGIBILITY_SAMPLE_WIDTH] for a real bitmap). Not a data class on
+ * purpose: FloatArray equality is referential, and nothing compares
+ * maps — they are only cached and aggregated.
  */
-suspend fun analyzeWallpaper(
-    bitmap: Bitmap?,
-    cols: Int,
-    rows: Int,
-): List<CellStats> = withContext(Dispatchers.Default) {
-    val safeCols = cols.coerceAtLeast(1)
-    val safeRows = rows.coerceAtLeast(1)
+class LuminanceMap(val width: Int, val height: Int, val values: FloatArray)
+
+/**
+ * Downsample [bitmap] to ~32px wide (aspect preserved) and linearize
+ * every pixel to a relative luminance. Bitmap work only — no grid
+ * knowledge, so the result is reusable across grid sizes. A null or
+ * empty bitmap yields an empty map, which [aggregateCells] renders
+ * as mid-grey cells (luminance 0.5, variance 0), for which Auto
+ * picks near-black text without a pill — a safe, legible default.
+ * Call off the main thread (callers use [Dispatchers.Default]).
+ */
+fun downsampleLuminance(bitmap: Bitmap?): LuminanceMap {
     if (bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) {
-        return@withContext List(safeCols * safeRows) { CellStats(0.5f, 0f) }
+        return LuminanceMap(0, 0, FloatArray(0))
     }
     val targetW = LEGIBILITY_SAMPLE_WIDTH
     val targetH = maxOf(1, (bitmap.height * targetW) / bitmap.width)
@@ -299,31 +300,67 @@ suspend fun analyzeWallpaper(
     try {
         val pixels = IntArray(targetW * targetH)
         small.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
-        val out = ArrayList<CellStats>(safeCols * safeRows)
-        for (row in 0 until safeRows) {
-            val y0 = (row * targetH) / safeRows
-            val y1 = ((row + 1) * targetH) / safeRows
-            for (col in 0 until safeCols) {
-                val x0 = (col * targetW) / safeCols
-                val x1 = ((col + 1) * targetW) / safeCols
-                val samples = FloatArray(maxOf(1, (x1 - x0) * (y1 - y0)))
-                var i = 0
-                for (y in y0 until y1) {
-                    for (x in x0 until x1) {
-                        val px = pixels[y * targetW + x]
-                        val r = linearizeChannel(((px shr 16) and 0xFF) / 255f)
-                        val g = linearizeChannel(((px shr 8) and 0xFF) / 255f)
-                        val b = linearizeChannel((px and 0xFF) / 255f)
-                        samples[i++] = 0.2126f * r + 0.7152f * g + 0.0722f * b
-                    }
-                }
-                out += cellStatsFor(samples.copyOf(i))
-            }
+        val values = FloatArray(pixels.size)
+        for (i in pixels.indices) {
+            val px = pixels[i]
+            values[i] = 0.2126f * linearizeChannel(((px shr 16) and 0xFF) / 255f) +
+                0.7152f * linearizeChannel(((px shr 8) and 0xFF) / 255f) +
+                0.0722f * linearizeChannel((px and 0xFF) / 255f)
         }
-        out
+        return LuminanceMap(targetW, targetH, values)
     } finally {
         if (small !== bitmap) small.recycle()
     }
+}
+
+/**
+ * 3.1 A12: the cheap half — one [CellStats] per cell of a [cols] ×
+ * [rows] grid over a cached [LuminanceMap]. Pure float math, no
+ * Bitmap, so grid/icon-size changes recompute ONLY this, never the
+ * downsample. An empty map yields mid-grey cells.
+ */
+fun aggregateCells(map: LuminanceMap, cols: Int, rows: Int): List<CellStats> {
+    val safeCols = cols.coerceAtLeast(1)
+    val safeRows = rows.coerceAtLeast(1)
+    if (map.width <= 0 || map.height <= 0 || map.values.isEmpty()) {
+        return List(safeCols * safeRows) { CellStats(0.5f, 0f) }
+    }
+    val out = ArrayList<CellStats>(safeCols * safeRows)
+    for (row in 0 until safeRows) {
+        val y0 = (row * map.height) / safeRows
+        val y1 = ((row + 1) * map.height) / safeRows
+        for (col in 0 until safeCols) {
+            val x0 = (col * map.width) / safeCols
+            val x1 = ((col + 1) * map.width) / safeCols
+            val samples = FloatArray(maxOf(1, (x1 - x0) * (y1 - y0)))
+            var i = 0
+            for (y in y0 until y1) {
+                for (x in x0 until x1) {
+                    samples[i++] = map.values[y * map.width + x]
+                }
+            }
+            out += cellStatsFor(samples.copyOf(i))
+        }
+    }
+    return out
+}
+
+/**
+ * Downsample [bitmap] to ~32px wide (aspect preserved) and compute one
+ * [CellStats] per cell of a [cols] × [rows] grid over it. Runs on
+ * [Dispatchers.Default] — never call this on the main thread, and never
+ * during scrolling. Composed from [downsampleLuminance] +
+ * [aggregateCells]; prefer those directly when the map can be cached.
+ * Dim is applied by the caller scaling luminance toward black before
+ * calling [labelStyleFor]; this function reports the raw wallpaper so
+ * one cached sample serves every dim level.
+ */
+suspend fun analyzeWallpaper(
+    bitmap: Bitmap?,
+    cols: Int,
+    rows: Int,
+): List<CellStats> = withContext(Dispatchers.Default) {
+    aggregateCells(downsampleLuminance(bitmap), cols, rows)
 }
 
 /**
@@ -333,15 +370,22 @@ suspend fun analyzeWallpaper(
  * sample is never reused. Dim and label-mode changes do NOT invalidate
  * the cache — they only change how cached stats are rendered.
  * Thread-safe; values are computed once per key by the caller's factory.
+ * 3.1 A12: also caches the downsampled [LuminanceMap] per wallpaper
+ * identity ALONE, so grid changes recompute only the aggregation.
  */
 class WallpaperLegibilityCache {
     private val cache = ConcurrentHashMap<String, List<CellStats>>()
+    private val maps = ConcurrentHashMap<String, LuminanceMap>()
 
     fun getOrPut(key: String, compute: () -> List<CellStats>): List<CellStats> =
         cache.getOrPut(key, compute)
 
+    fun mapFor(wallpaperKey: String, compute: () -> LuminanceMap): LuminanceMap =
+        maps.getOrPut(wallpaperKey, compute)
+
     fun invalidate() {
         cache.clear()
+        maps.clear()
     }
 
     fun invalidateKey(key: String) {
@@ -395,11 +439,15 @@ fun rememberLegibilityCells(
     // Keys: cacheKey (wallpaper identity + grid size) plus bitmap, so a
     // late-arriving HavenOS bitmap (source starts null) still triggers
     // analysis. Scrolling changes neither key, so scrolling never
-    // recomputes. analyzeWallpaper itself moves the work to
-    // Dispatchers.Default; this effect only awaits it.
+    // recomputes.
+    // 3.1 A12: the downsample is cached once per wallpaper identity;
+    // a grid change re-aggregates from the cached map only — the
+    // Bitmap work never reruns on a Settings slider tick.
     LaunchedEffect(cacheKey, bitmap) {
-        val computed = analyzeWallpaper(bitmap, safeCols, safeRows)
-        cells = cache.getOrPut(cacheKey) { computed }
+        val map = withContext(Dispatchers.Default) {
+            cache.mapFor(wallpaperKey) { downsampleLuminance(bitmap) }
+        }
+        cells = cache.getOrPut(cacheKey) { aggregateCells(map, safeCols, safeRows) }
     }
     return cells
 }

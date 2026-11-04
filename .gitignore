@@ -13,3 +13,6 @@ local.properties
 .idea/
 *.DS_Store
 # Release artifacts live on GitHub Releases, not in the tree.
+
+# Working-tree reference images (third-party inspiration) are never published.
+docs/references/

@@ -12,6 +12,7 @@ import android.os.Process
 import android.os.UserHandle
 import android.os.UserManager
 import android.util.LruCache
+import app.havenos.launcher.HavenApp
 import kotlinx.coroutines.CoroutineScope
 import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
@@ -124,7 +125,15 @@ class AppRepository(ctx: Context, private val settings: Settings? = null) {
     private val iconCache = LruCache<String, Drawable>(64)
     private val bitmapCache = LruCache<String, android.graphics.Bitmap>(256)
 
-    /** Launch stats: app key -> (count, lastLaunchMs). Drives recents + ranking. */
+    /** Packages with a pending install broadcast, awaiting catalog refresh (see [refresh]). */
+    private val pendingAddedPkgs = mutableSetOf<String>()
+
+    /** The coordinator, when this repository runs inside HavenApp (null in bare tests / before init). */
+    private fun layoutStore(): LayoutCoordinator? = try {
+        (appCtx as? HavenApp)?.layoutStore
+    } catch (t: Throwable) {
+        null
+    }
     private val _stats = MutableStateFlow<Map<String, Pair<Int, Long>>>(emptyMap())
     val stats: StateFlow<Map<String, Pair<Int, Long>>> = _stats
 
@@ -165,6 +174,38 @@ class AppRepository(ctx: Context, private val settings: Settings? = null) {
             }
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
+                    // Coordination fix §2: install/uninstall/disable go
+                    // through commit(ALL) — never a direct profile or
+                    // layout write. Update broadcasts (EXTRA_REPLACING)
+                    // and our own package never touch membership.
+                    val pkg = intent.data?.schemeSpecificPart
+                    val replacing = intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
+                    if (pkg != null && !replacing && pkg != appCtx.packageName) {
+                        when (intent.action) {
+                            Intent.ACTION_PACKAGE_ADDED -> synchronized(pendingAddedPkgs) {
+                                pendingAddedPkgs += pkg
+                            }
+                            Intent.ACTION_PACKAGE_REMOVED -> scope.launch {
+                                runCatching { layoutStore()?.removePackageEverywhere(pkg) }
+                            }
+                            Intent.ACTION_PACKAGE_CHANGED -> scope.launch {
+                                // Disabled -> remove everywhere; enabled ->
+                                // re-add membership (catalog refresh below
+                                // supplies the keys). Any lookup failure
+                                // means "leave membership alone".
+                                val enabled = try {
+                                    pm.getApplicationInfo(pkg, 0).enabled
+                                } catch (t: Throwable) {
+                                    null
+                                }
+                                if (enabled == false) {
+                                    runCatching { layoutStore()?.removePackageEverywhere(pkg) }
+                                } else if (enabled == true) {
+                                    synchronized(pendingAddedPkgs) { pendingAddedPkgs += pkg }
+                                }
+                            }
+                        }
+                    }
                     refresh()
                 }
             }
@@ -180,7 +221,26 @@ class AppRepository(ctx: Context, private val settings: Settings? = null) {
 
     fun refresh() {
         scope.launch {
-            _apps.value = query()
+            val fresh = query()
+            _apps.value = fresh
+            // Newly installed (or re-enabled) packages gain canonical
+            // membership through commit(ALL). No home placement is
+            // written here: auto-add to the live home was deliberately
+            // removed (the Library shows the whole catalog), and only
+            // the dormant profile maps gain a placement, when auto-add
+            // is on. Packages absent from the fresh catalog (no
+            // launcher activity) simply gain nothing.
+            val pending = synchronized(pendingAddedPkgs) {
+                val out = pendingAddedPkgs.toSet()
+                pendingAddedPkgs.clear()
+                out
+            }
+            if (pending.isNotEmpty()) {
+                val keys = fresh.filter { it.pkg in pending }.map { it.key }
+                if (keys.isNotEmpty()) {
+                    runCatching { layoutStore()?.addAppsToProfiles(keys) }
+                }
+            }
         }
     }
 

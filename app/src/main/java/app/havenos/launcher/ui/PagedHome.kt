@@ -38,7 +38,6 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -53,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -107,6 +107,9 @@ import app.havenos.launcher.theme.GlassSurface
 import app.havenos.launcher.theme.LocalFont
 import app.havenos.launcher.theme.LocalPalette
 import app.havenos.launcher.theme.LocalState
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenMenuRow
 import app.havenos.launcher.ui.settings.shell.TextFieldDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -204,6 +207,30 @@ private fun isUserApp(context: android.content.Context, pkg: String): Boolean = 
 }
 
 @OptIn(ExperimentalFoundationApi::class)
+// ---------------------------------------------------------------------------
+// 3.1 Phase A: page geometry + glance rules (pure, unit-tested).
+// ---------------------------------------------------------------------------
+
+/**
+ * 3.1 A4: the pager's parallax shift for one page. The neighbour page
+ * at rest sits at pageOffset ±1, so its content shifts 8% of a page
+ * width INTO the current viewport; graphicsLayer does not clip, so
+ * without a clip the neighbour's left edge draws as a sliver. The
+ * page Box below is clipped to its bounds, which is what makes the
+ * shift safe — the value itself is unchanged.
+ */
+fun pageParallaxX(pageOffset: Float, pageWidthPx: Float, parallaxOn: Boolean, reduceMotion: Boolean): Float =
+    if (parallaxOn && !reduceMotion) pageOffset * pageWidthPx * 0.08f else 0f
+
+/**
+ * 3.1 A5: the glance row is composed only when Today is not visible
+ * anywhere — not as a rail, not as a strip, not as a pager page.
+ * [todayVisible] is the raw Today toggle, NOT the pager-page flag:
+ * passing the pager flag here re-showed the glance beside the rail
+ * and under the strip (both count as Today visible).
+ */
+fun glanceVisible(todayVisible: Boolean): Boolean = !todayVisible
+
 @Composable
 fun PagedHome(
     app: HavenApp,
@@ -233,6 +260,9 @@ fun PagedHome(
     // M8 additions (all defaulted; the M7 host call compiles unchanged
     // apart from the renamed onReorderFlow -> onCommitItems).
     todayOn: Boolean = true,
+    // 3.1 A5: raw Today toggle (rail/strip/pager-page all count as
+    // visible). Defaults to todayOn so existing callers are unchanged.
+    todayVisible: Boolean = todayOn,
     parallaxOn: Boolean = true,
     indicatorOn: Boolean = true,
     hiddenPages: List<Int> = emptyList(),
@@ -288,6 +318,12 @@ fun PagedHome(
     // dock, never over content).
     hostPagerState: PagerState? = null,
     indicatorHosted: Boolean = false,
+    // v3 Track A (Mascot): optional sink for cell window rects. When
+    // set, every flow-item cell reports its rect here too, so the
+    // mascot layer can walk adjacent to a real icon and ring it.
+    // Writing into the caller's map (not a callback) avoids a
+    // recomposition loop on every layout pass.
+    cellRectsOut: MutableMap<String, Rect>? = null,
 ) {
     val state = stateOverride ?: LocalState.current
     val palette = LocalPalette.current
@@ -1054,7 +1090,11 @@ fun PagedHome(
                 .then(a11yMod)
                 .offset(x = xDp, y = yDp)
                 .size(wDp, hDp)
-                .onGloballyPositioned { cellWindowRects[item.id] = it.boundsInWindow() }
+                .onGloballyPositioned {
+                    val r = it.boundsInWindow()
+                    cellWindowRects[item.id] = r
+                    cellRectsOut?.put(item.id, r)
+                }
                 .graphicsLayer {
                     alpha = if (isDragged) 0.4f else 1f
                     // Doc 2 §4.4: idle edit items are lifted (+2dp
@@ -1392,11 +1432,16 @@ fun PagedHome(
                 val pageOffset =
                     (pagerState.currentPage - pagerPage) + pagerState.currentPageOffsetFraction
                 val parallaxX =
-                    if (parallaxOn && !state.reduceMotion) pageOffset * pageWidthPx * 0.08f else 0f
+                    pageParallaxX(pageOffset, pageWidthPx, parallaxOn, state.reduceMotion)
                 Box(
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer { translationX = parallaxX }
+                        // 3.1 A4: clip page content to page bounds —
+                        // the parallax shift above would otherwise
+                        // draw the neighbour page's left edge as a
+                        // sliver at rest (graphicsLayer never clips).
+                        .clipToBounds()
                         .onGloballyPositioned { pageWindowRects[pagerPage] = it.boundsInWindow() },
                 ) {
                     val gridPage = gridPageForPager(pagerPage)
@@ -1420,7 +1465,7 @@ fun PagedHome(
                         )
                     } else {
                         Column(Modifier.fillMaxSize()) {
-                            if (!todayOn) {
+                            if (glanceVisible(todayVisible)) {
                                 GlanceRow(weather = weather, events = events, labelCells = labelCells)
                             }
                             // Grid pages (M9): Expanded centres the
@@ -1626,24 +1671,26 @@ fun PagedHome(
     if (mEntry != null) {
         val gridItem = items.firstOrNull { it.kind == ItemKind.APP && it.payload == mEntry.key }
         val mIsUser = remember(mEntry) { isUserApp(context, mEntry.pkg) }
-        AlertDialog(
-            onDismissRequest = { menuEntry = null },
-            title = { Text(mEntry.label) },
-            text = {
-                Column {
-                    PagerMenuRow("Edit") {
+        HavenGlassDialog(
+            onDismiss = { menuEntry = null },
+            title = mEntry.label,
+            buttons = {
+                TextButton(onClick = { menuEntry = null }) { Text("Cancel") }
+            },
+            content = {
+                    HavenMenuRow(HavenIcon.Home, "Edit") {
                         menuEntry = null
                         onEditHome()
                     }
-                    PagerMenuRow("Edit label") {
+                    HavenMenuRow(HavenIcon.Gear, "Edit label") {
                         menuEntry = null
                         labelEntry = mEntry
                     }
-                    PagerMenuRow("Edit icon") {
+                    HavenMenuRow(HavenIcon.Image, "Edit icon") {
                         menuEntry = null
                         iconEntry = mEntry
                     }
-                    PagerMenuRow("Remove") {
+                    HavenMenuRow(HavenIcon.Close, "Remove") {
                         menuEntry = null
                         if (gridItem != null) {
                             commitNow(items.filterNot { it.id == gridItem.id })
@@ -1652,7 +1699,7 @@ fun PagedHome(
                             toastNow("Not on home")
                         }
                     }
-                    PagerMenuRow("App info") {
+                    HavenMenuRow(HavenIcon.Info, "App info") {
                         menuEntry = null
                         try {
                             context.startActivity(
@@ -1666,7 +1713,7 @@ fun PagedHome(
                         }
                     }
                     if (mIsUser) {
-                        PagerMenuRow("Uninstall") {
+                        HavenMenuRow(HavenIcon.Close, "Uninstall", destructive = true) {
                             menuEntry = null
                             try {
                                 context.startActivity(
@@ -1677,10 +1724,7 @@ fun PagedHome(
                             }
                         }
                     }
-                }
             },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { menuEntry = null }) { Text("Cancel") } },
         )
     }
 
@@ -1711,16 +1755,6 @@ fun PagedHome(
     val iEntry = iconEntry
     if (iEntry != null) {
         AppIconPickerDialog(app, iEntry, state) { iconEntry = null }
-    }
-}
-
-@Composable
-private fun PagerMenuRow(text: String, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text, color = LocalPalette.current.onSurface, fontSize = 15.sp)
     }
 }
 

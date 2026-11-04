@@ -13,6 +13,8 @@ import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import app.havenos.launcher.data.network.ApiCacheDao
 import app.havenos.launcher.data.network.ApiCacheRow
+import app.havenos.launcher.data.network.ApiDiagnosticsDao
+import app.havenos.launcher.data.network.ApiDiagnosticsRow
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONArray
 
@@ -259,6 +261,76 @@ interface LayoutSnapshotDao {
     suspend fun pruneExcept(keepIds: List<Long>)
 }
 
+// Coordination fix §5 (schema v6): durable undo + durable dirty flags.
+// - undo_entries: one row per undo/redo frame. direction is "UNDO" or
+//   "REDO"; layoutJson is the full snapshot JSON (items, folders,
+//   dock, hidden, Today cards, recents); profilesJson is the
+//   LayoutProfiles JSON (placements + dirty flags), so Sync/install
+//   undo restores profiles too. seq orders frames oldest→newest.
+// - profile_dirty: one row per dirty window class. The dirty set used
+//   to live in memory + backup JSON only (a process restart lost it);
+//   now switch-time repair survives restart.
+@Entity(tableName = "undo_entries")
+data class UndoEntryRow(
+    @PrimaryKey(autoGenerate = true) val seq: Long = 0,
+    val direction: String, // "UNDO" | "REDO"
+    val layoutJson: String,
+    val profilesJson: String,
+    // 3.1 A9: grid-override action ("L:8:6" / "P:-1:-1"), "" = none.
+    // Added by MIGRATION_7_8; default keeps old constructions valid.
+    val gridJson: String = "",
+)
+
+@Entity(tableName = "profile_dirty")
+data class ProfileDirtyRow(
+    @PrimaryKey val windowClass: String,
+)
+
+@Dao
+interface UndoEntryDao {
+    @Query("SELECT * FROM undo_entries WHERE direction = :direction ORDER BY seq ASC")
+    suspend fun all(direction: String): List<UndoEntryRow>
+
+    @Insert
+    suspend fun insert(row: UndoEntryRow)
+
+    @Query(
+        "DELETE FROM undo_entries WHERE direction = :direction AND seq = " +
+            "(SELECT MAX(seq) FROM undo_entries WHERE direction = :direction)",
+    )
+    suspend fun deleteLatest(direction: String)
+
+    @Query("DELETE FROM undo_entries WHERE direction = :direction")
+    suspend fun clearDirection(direction: String)
+
+    @Query("DELETE FROM undo_entries")
+    suspend fun clearAll()
+
+    @Query(
+        "DELETE FROM undo_entries WHERE direction = :direction AND seq NOT IN " +
+            "(SELECT seq FROM undo_entries WHERE direction = :direction ORDER BY seq DESC LIMIT :keep)",
+    )
+    suspend fun prune(direction: String, keep: Int)
+}
+
+@Dao
+interface ProfileDirtyDao {
+    @Query("SELECT * FROM profile_dirty")
+    suspend fun all(): List<ProfileDirtyRow>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(rows: List<ProfileDirtyRow>)
+
+    @Query("DELETE FROM profile_dirty")
+    suspend fun clear()
+
+    @Transaction
+    suspend fun replaceAll(rows: List<ProfileDirtyRow>) {
+        clear()
+        if (rows.isNotEmpty()) upsertAll(rows)
+    }
+}
+
 fun migration34Sql(): List<String> = listOf(
     "CREATE TABLE IF NOT EXISTS `layout_profiles` (`key` TEXT NOT NULL, `windowClass` TEXT NOT NULL, `itemId` TEXT NOT NULL, `page` INTEGER NOT NULL, `col` INTEGER NOT NULL, `row` INTEGER NOT NULL, `colSpan` INTEGER NOT NULL, `rowSpan` INTEGER NOT NULL, PRIMARY KEY(`key`))",
     "CREATE TABLE IF NOT EXISTS `layout_snapshots` (`id` INTEGER NOT NULL, `createdAtMs` INTEGER NOT NULL, `pageCount` INTEGER NOT NULL, `itemCount` INTEGER NOT NULL, `folderCount` INTEGER NOT NULL, `layoutJson` TEXT NOT NULL, PRIMARY KEY(`id`))",
@@ -283,9 +355,62 @@ val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
     }
 }
 
+// Coordination fix §5 (2026-10-29): schema v6 is ADDITIVE ONLY — two
+// new tables + one defaulted column — so a v5 install upgrades with
+// layouts, profiles, snapshots, and API cache untouched. New tables
+// start empty (undo depth 0, no dirty flags after upgrade; a dirty
+// flag set before the upgrade was memory-only and is already lost by
+// the upgrade restart itself). api_cache rows gain
+// consecutiveFailures = 0 (step 7 maintains it; the default keeps old
+// rows valid). SQL is exposed via migration56Sql() so the unit test
+// pins it, following the migration34Sql() precedent.
+fun migration56Sql(): List<String> = listOf(
+    "CREATE TABLE IF NOT EXISTS `undo_entries` (`seq` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `direction` TEXT NOT NULL, `layoutJson` TEXT NOT NULL, `profilesJson` TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS `profile_dirty` (`windowClass` TEXT NOT NULL, PRIMARY KEY(`windowClass`))",
+    "ALTER TABLE `api_cache` ADD COLUMN `consecutiveFailures` INTEGER NOT NULL DEFAULT 0",
+)
+
+val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        for (sql in migration56Sql()) db.execSQL(sql)
+    }
+}
+
+// 3.1 Phase A2 (2026-10-30): schema v7 is ADDITIVE ONLY — one new
+// table, no column changes — so a v6 install upgrades with layouts,
+// profiles, snapshots, API cache, undo frames, and dirty flags
+// untouched. The table starts empty: Diagnostics rows appear after
+// the first post-upgrade fetch per API. SQL is exposed via
+// migration67Sql() so the unit test pins it, following the
+// migration34Sql()/migration56Sql() precedent.
+fun migration67Sql(): List<String> = listOf(
+    "CREATE TABLE IF NOT EXISTS `api_diagnostics` (`api` TEXT NOT NULL, `resultClass` TEXT NOT NULL, `httpCode` INTEGER NOT NULL, `timeMs` INTEGER NOT NULL, `bodySnippet` TEXT NOT NULL, PRIMARY KEY(`api`))",
+)
+
+val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        for (sql in migration67Sql()) db.execSQL(sql)
+    }
+}
+
+// 3.1 A9: undo frames gain a grid-override action. ADDITIVE ONLY —
+// one nullable-by-default column; existing rows read as "" (no grid
+// action), which is exactly their old behaviour. SQL is exposed via
+// migration78Sql() so the unit test pins it, following the
+// migration34Sql()/migration56Sql()/migration67Sql() precedent.
+fun migration78Sql(): List<String> = listOf(
+    "ALTER TABLE `undo_entries` ADD COLUMN `gridJson` TEXT NOT NULL DEFAULT ''",
+)
+
+val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        for (sql in migration78Sql()) db.execSQL(sql)
+    }
+}
+
 @Database(
-    entities = [HomeItem::class, Folder::class, LayoutProfileRow::class, LayoutSnapshotRow::class, ApiCacheRow::class],
-    version = 5,
+    entities = [HomeItem::class, Folder::class, LayoutProfileRow::class, LayoutSnapshotRow::class, ApiCacheRow::class, UndoEntryRow::class, ProfileDirtyRow::class, ApiDiagnosticsRow::class],
+    version = 8,
     exportSchema = false,
 )
 abstract class HavenDb : RoomDatabase() {
@@ -294,11 +419,14 @@ abstract class HavenDb : RoomDatabase() {
     abstract fun layoutProfiles(): LayoutProfileDao
     abstract fun layoutSnapshots(): LayoutSnapshotDao
     abstract fun apiCache(): ApiCacheDao
+    abstract fun apiDiagnostics(): ApiDiagnosticsDao
+    abstract fun undoEntries(): UndoEntryDao
+    abstract fun profileDirty(): ProfileDirtyDao
 
     companion object {
         fun create(ctx: Context): HavenDb =
             Room.databaseBuilder(ctx.applicationContext, HavenDb::class.java, "havenos.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .build()
     }
 }

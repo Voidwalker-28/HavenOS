@@ -56,6 +56,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             val app = HavenApp.of(this)
             val state by app.settings.state.collectAsState()
+            // 3.1.1 (item 3): Safe Mode forces Solid rendering (blur
+            // off) as a theme-level runtime override only — the stored
+            // surfaceMaterial is untouched, so Re-enable restores it.
+            val safeMode by app.safeMode.collectAsState()
+            val themeState = if (safeMode) state.copy(surfaceMaterial = 0) else state
             val insetsController = remember(window) {
                 WindowInsetsControllerCompat(window, window.decorView)
             }
@@ -72,7 +77,7 @@ class MainActivity : ComponentActivity() {
                     // insets are best-effort
                 }
             }
-            HavenTheme(state) {
+            HavenTheme(themeState) {
                 HavenRoot(
                     app,
                     onBackAction = { backAction = it },
@@ -100,6 +105,17 @@ class MainActivity : ComponentActivity() {
             HavenApp.of(this).widgetHost.startListening()
         } catch (t: Throwable) {
             // hosted widgets are best-effort
+        }
+    }
+
+    // 3.1 A12: returning to home re-runs Today cards' stale checks
+    // (their flows otherwise live as long as home composition does).
+    override fun onResume() {
+        super.onResume()
+        try {
+            HavenApp.of(this).noteHomeResumed()
+        } catch (t: Throwable) {
+            // tick is best-effort; cards still read cache
         }
     }
 

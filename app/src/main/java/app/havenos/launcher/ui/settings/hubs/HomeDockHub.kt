@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,12 +15,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -40,21 +41,36 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.window.Dialog
 import app.havenos.launcher.HavenApp
 import app.havenos.launcher.data.WeatherNet
 import app.havenos.launcher.data.gridCells
+import app.havenos.launcher.data.LayoutMutation
+import app.havenos.launcher.data.WindowClass
+import app.havenos.launcher.data.densityGridCells
+import app.havenos.launcher.ui.glass.GlassLevel
+import app.havenos.launcher.ui.glass.GroupedSection
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
+import app.havenos.launcher.ui.glass.HavenRadii
+import app.havenos.launcher.theme.LocalAccentRoles
+import app.havenos.launcher.ui.glass.glass
 import app.havenos.launcher.ui.gridChangePlan
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import app.havenos.launcher.ui.settings.shell.DeepLinkAnchor
 import app.havenos.launcher.ui.settings.shell.LocalDraftLayer
 import app.havenos.launcher.ui.settings.shell.SearchEntry
 import app.havenos.launcher.data.iconDp
@@ -132,22 +148,61 @@ fun HomeDockHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
         state.defaultPage,
         labelFor,
     )
+    // Coordination fix §3: the visible pages a grid commit reflows
+    // under — the SAME formula the picker's ghost plan uses (non-hidden
+    // pages, falling back to all pages), so the preview's promise and
+    // the commit's result can never disagree.
+    val visibleGridPages = remember(homeItems, state.hiddenPagesJson, state.pageCount) {
+        val hidden = parseHiddenPages(state.hiddenPagesJson)
+        val total = maxOf((homeItems.maxOfOrNull { it.page } ?: -1) + 1, state.pageCount, 1)
+        (0 until total).filter { it !in hidden }.ifEmpty { (0 until total).toList() }
+    }
+    // Grid-commit target profiles (§1): the tab's grid is shared by
+    // its orientation family; the current profile is rewritten, the
+    // other family member is marked dirty for switch-time repair.
+    fun gridTargets(landscape: Boolean): Set<WindowClass> =
+        if (landscape) setOf(WindowClass.EXPANDED_LANDSCAPE, WindowClass.MEDIUM)
+        else setOf(WindowClass.COMPACT, WindowClass.MEDIUM)
 
     Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
-        HubTopBar(onBack = onBack, title = "Home & Dock")
-        Spacer(Modifier.height(4.dp))
 
         HubSection("Grid")
+        // 3.1 A10: the quick-customize Layout item deep-links here.
+        // 3.1 Phase E: Find's grid control lands on the same row.
+        DeepLinkAnchor(field = "home") {
+        DeepLinkAnchor(field = "grid") {
         GridPickerRow(
             state = state,
             onSpotlight = { onSpotlight("grid") },
             onCommit = { landscape, cols, rows ->
-                scope.launch { settings.setGridOverride(landscape, cols, rows) }
+                // Coordination fix §3: preview + commit are one
+                // transaction now — the commit reflows under the new
+                // grid and records one undo entry. The host reflow
+                // effect stays as a safety net only (it no-ops on the
+                // already-valid result).
+                scope.launch {
+                    app.layoutStore.commitMutation(
+                        LayoutMutation.GridChange(cols, rows, landscape),
+                        targetProfiles = gridTargets(landscape),
+                        visiblePages = visibleGridPages,
+                    )
+                }
             },
             onFollowDensity = { landscape ->
-                scope.launch { settings.clearGridOverride(landscape) }
+                scope.launch {
+                    val densityGrid = state.densityGridCells(landscape)
+                    app.layoutStore.commitMutation(
+                        LayoutMutation.GridChange(
+                            densityGrid.first, densityGrid.second, landscape, followDensity = true,
+                        ),
+                        targetProfiles = gridTargets(landscape),
+                        visiblePages = visibleGridPages,
+                    )
+                }
             },
         )
+        }
+        }
 
         HubSwitchRow(
             title = "Snap to grid",
@@ -224,13 +279,20 @@ fun HomeDockHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
         )
 
         HubSection("Dock")
+        // 3.1 A10: the quick-customize Dock item deep-links here.
+        DeepLinkAnchor(field = "dock") {
         HubSegmented(
             title = "Dock position",
             options = listOf("Bottom", "Left", "Right"),
             selected = state.dockPos.coerceIn(0, 2),
             onSpotlight = { onSpotlight("dock") },
-            onSelect = { scope.launch { settings.setDockPos(it) } },
+            // Coordination fix §3: dock position through commit. No
+            // grid is passed: dock position never changes hostGridCells
+            // (it depends on size class, screen, and rail — not dock
+            // position), so the reflow is a no-op by the doc's rule.
+            onSelect = { scope.launch { app.layoutStore.commitMutation(LayoutMutation.DockPositionChange(it)) } },
         )
+        }
         DockPreviewSketch(position = state.dockPos)
         DockSlotsRow(
             slots = state.dockMax,
@@ -259,7 +321,10 @@ fun HomeDockHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             checked = state.todayOn,
             info = "Shows the Today column on home.",
             onSpotlight = { onSpotlight("home") },
-            onChange = { scope.launch { settings.setTodayOn(it) } },
+            // Coordination fix §3: Today on/off through commit — page
+            // structure changes atomically with one undo entry, and
+            // placements are untouched.
+            onChange = { scope.launch { app.layoutStore.commitMutation(LayoutMutation.TodayToggle(it)) } },
         )
         HubSwitchRow(
             title = "Auto-rotate stack",
@@ -347,6 +412,7 @@ fun HomeDockHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             )
 
             HubSection("Widgets")
+            DeepLinkAnchor(field = "widgets") {
             WidgetFrameRows(
                 state = state,
                 onSpotlight = { onSpotlight("widgets") },
@@ -354,6 +420,20 @@ fun HomeDockHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                     scope.launch { settings.setWidgetFrame(radius, bg, opacity) }
                 },
             )
+            }
+
+            HubSection("Dynamic Island")
+            DeepLinkAnchor(field = "island") {
+            HubSwitchRow(
+                title = "Dynamic Island",
+                checked = state.islandOn,
+                info = "A pill at the top of home for live activity: charging, now playing, and new notifications. Home only, off until you turn it on. Media and notifications need notification access (already used for badges); charging needs nothing. Nothing shows when nothing is live.",
+                onSpotlight = { onSpotlight("home") },
+                onChange = { on ->
+                    scope.launch { settings.setIslandOn(on) }
+                },
+            )
+            }
 
             HubSection("Weather")
             WeatherRows(
@@ -406,10 +486,11 @@ private fun DefaultPageRow(
                     }.padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        if (isSelected) "●" else "○",
-                        fontSize = 14.sp,
-                        color = if (isSelected) scheme.primary else scheme.onSurface.copy(alpha = 0.5f),
+                    HavenIconImage(
+                        if (isSelected) HavenIcon.RadioOn else HavenIcon.RadioOff,
+                        null,
+                        tint = if (isSelected) scheme.primary else scheme.onSurface.copy(alpha = 0.5f),
+                        size = 20.dp,
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
@@ -431,6 +512,91 @@ private fun DefaultPageRow(
  * applies per orientation; there is no tablet tab because gridCells()
  * has no tablet branch.
  */
+/**
+ * Coordination fix §6: grid-overflow destinations as pure data, shared
+ * by the picker's ghost text and the confirm dialog (one component, so
+ * the two can never disagree).
+ *
+ * Entries are "page {pos} ({count})" in grid-page order, where pos is
+ * the pager position (grid page + 1, or + 2 while Today occupies
+ * pager position 1). The COUNT line is never collapsed — only this
+ * list collapses, past 8 entries, with a "+M more" row expanding
+ * inline to the full list (no dialog, no navigation).
+ */
+internal fun moveDestinationEntries(destinations: Map<Int, Int>, todayOn: Boolean): List<String> =
+    destinations.entries.sortedBy { it.key }.map { (page, count) ->
+        "page ${page + if (todayOn) 2 else 1} ($count)"
+    }
+
+/** Visible slice of [entries]: all when <= 8 or expanded, else the first 8 plus the hidden count. */
+internal fun visibleDestinationEntries(entries: List<String>, expanded: Boolean): Pair<List<String>, Int> {
+    if (expanded || entries.size <= 8) return entries to 0
+    return entries.take(8) to (entries.size - 8)
+}
+
+/**
+ * 3.1 Phase C: the grid-shrink move summary as one sentence. Up to 8
+ * destinations are named in the sentence; beyond that the sentence
+ * stops at the count and the expandable list names the rest.
+ */
+internal fun moveSummarySentence(movedCount: Int, entries: List<String>): String {
+    val noun = if (movedCount == 1) "1 item will move" else "$movedCount items will move"
+    if (entries.isEmpty() || entries.size > 8) return "$noun."
+    val joined = when (entries.size) {
+        1 -> entries[0]
+        else -> entries.dropLast(1).joinToString(", ") + " and " + entries.last()
+    }
+    return "$noun to $joined."
+}
+
+/** 3.1 Phase C: label + minus/value/plus stepper for one grid axis (48dp targets). */
+@Composable
+private fun GridStepperRow(label: String, value: Int, onChange: (Int) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 15.sp, modifier = Modifier.weight(1f))
+        androidx.compose.material3.IconButton(
+            onClick = { onChange((value - 1).coerceIn(3, 12)) },
+            modifier = Modifier.size(48.dp),
+        ) { HavenIconImage(HavenIcon.Minus, "Decrease $label") }
+        Text(
+            "$value",
+            fontSize = 16.sp,
+            modifier = Modifier.width(28.dp),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+        androidx.compose.material3.IconButton(
+            onClick = { onChange((value + 1).coerceIn(3, 12)) },
+            modifier = Modifier.size(48.dp),
+        ) { HavenIconImage(HavenIcon.Plus, "Increase $label") }
+    }
+}
+
+@Composable
+private fun MoveDestinationsText(
+    destinations: Map<Int, Int>,
+    todayOn: Boolean,
+    fontSize: TextUnit,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val entries = moveDestinationEntries(destinations, todayOn)
+    if (entries.isEmpty()) return
+    val (shown, more) = visibleDestinationEntries(entries, expanded)
+    Text(
+        "Moves to: " + shown.joinToString(" · "),
+        fontSize = fontSize,
+        color = color,
+    )
+    if (more > 0) {
+        Text(
+            "+$more more",
+            fontSize = fontSize,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.clickable { expanded = true },
+        )
+    }
+}
+
 @Composable
 private fun GridPickerRow(
     state: app.havenos.launcher.data.SettingsState,
@@ -468,16 +634,12 @@ private fun GridPickerRow(
     var movedCount by remember { mutableIntStateOf(0) }
     var moveDestinations by remember { mutableStateOf<Map<Int, Int>>(emptyMap()) }
     var confirmPending by remember { mutableStateOf(false) }
+    // 3.1 A9: Follow-density confirmation state (dialog below).
+    var followDensityPending by remember { mutableStateOf(false) }
 
     // Debounced impact plan over the stored grid model (the SAME
     // reflow the host applies on commit, run as a preview); 0 and no
-    // destinations when not shrinking. Destination pages are pager
-    // positions: grid page g is "page g+1", or "page g+2" while the
-    // Today page occupies pager position 1.
-    val destinationText = moveDestinations.entries.sortedBy { it.key }.joinToString(" · ") { (page, count) ->
-        val pos = page + if (state.todayOn) 2 else 1
-        "page $pos ($count)"
-    }
+    // destinations when not shrinking.
     LaunchedEffect(draftCols, draftRows, tabLandscape) {
         if (!isShrink) {
             movedCount = 0
@@ -499,6 +661,12 @@ private fun GridPickerRow(
         }
     }
 
+    // 3.1 Phase C: one-sentence move summary, shared by the preview
+    // grouped section and the shrink confirm dialog.
+    val moveEntries = moveDestinationEntries(moveDestinations, state.todayOn)
+    val moveSentence = moveSummarySentence(movedCount, moveEntries)
+
+    Column {
     HubRow(
         title = "Grid",
         value = "$draftCols × $draftRows",
@@ -510,6 +678,8 @@ private fun GridPickerRow(
             selected = if (tabLandscape) 1 else 0,
             onSelect = { tabLandscape = it == 1 },
         )
+        GridStepperRow("Columns", draftCols) { draftCols = it }
+        GridStepperRow("Rows", draftRows) { draftRows = it }
         Text(
             if (isCustom) "Custom" else "Follows density",
             fontSize = 13.sp,
@@ -557,33 +727,12 @@ private fun GridPickerRow(
                 }
             }
         }
-        if (isShrink && movedCount > 0) {
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                repeat(minOf(movedCount, 12)) {
-                    Box(
-                        Modifier.size(14.dp).padding(end = 2.dp).clip(CircleShape)
-                            .background(scheme.onSurface.copy(alpha = 0.25f)),
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (movedCount == 1) "1 item will move" else "$movedCount items will move",
-                    fontSize = 13.sp,
-                    color = scheme.onSurface.copy(alpha = 0.75f),
-                )
-            }
-            if (destinationText.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Moves to: $destinationText",
-                    fontSize = 13.sp,
-                    color = scheme.onSurface.copy(alpha = 0.75f),
-                )
-            }
-        }
+        // 3.1 Phase C: the button row scrolls instead of squeezing, and
+        // the Follow-density button has a minimum width with no wrap,
+        // so its label can never wrap letter-by-letter.
         Row(
-            Modifier.fillMaxWidth().padding(top = 12.dp),
+            Modifier.fillMaxWidth().padding(top = 12.dp)
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Button(
@@ -603,56 +752,153 @@ private fun GridPickerRow(
                 onClick = { draftLayer?.discard(); draftEpoch++ },
             ) { Text("Cancel") }
             OutlinedButton(
+                modifier = Modifier.sizeIn(minWidth = 148.dp),
                 onClick = {
-                    draftLayer?.discard()
-                    onFollowDensity(tabLandscape)
-                    draftEpoch++
+                    // 3.1 A9: a custom grid for this orientation is
+                    // a density-independent size — resetting it to
+                    // density needs an explicit Keep/Reset choice,
+                    // never a silent clear. No override → no-op.
+                    if (isCustom) followDensityPending = true
+                    else {
+                        draftLayer?.discard()
+                        onFollowDensity(tabLandscape)
+                        draftEpoch++
+                    }
                 },
-            ) { Text("Follow density") }
+            ) { Text("Follow density", maxLines = 1, softWrap = false) }
         }
     }
-    if (confirmPending) {
-        AlertDialog(
-            onDismissRequest = { confirmPending = false },
-            title = { Text("Shrink the grid?", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
+    // 3.1 Phase C: the shrink preview is its own grouped section with
+    // the move summary as one sentence + the expandable list past 8.
+    if (isShrink && movedCount > 0) {
+        Spacer(Modifier.height(12.dp))
+        GroupedSection(
+            label = "Grid change preview",
+            rows = listOf({
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         repeat(minOf(movedCount, 12)) {
                             Box(
-                                Modifier.size(16.dp).padding(end = 2.dp).clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)),
+                                Modifier.size(14.dp).padding(end = 2.dp).clip(CircleShape)
+                                    .background(scheme.onSurface.copy(alpha = 0.25f)),
                             )
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        if (movedCount == 1) "1 item will move" else "$movedCount items will move",
-                        fontSize = 14.sp,
+                        moveSentence,
+                        fontSize = 13.sp,
+                        color = scheme.onSurface.copy(alpha = 0.75f),
                     )
-                    if (destinationText.isNotEmpty()) {
+                    if (moveEntries.size > 8) {
                         Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Moves to: $destinationText",
-                            fontSize = 14.sp,
+                        MoveDestinationsText(
+                            destinations = moveDestinations,
+                            todayOn = state.todayOn,
+                            fontSize = 13.sp,
+                            color = scheme.onSurface.copy(alpha = 0.75f),
                         )
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmPending = false
-                    draftLayer?.discard()
-                    onSpotlight()
-                    onCommit(tabLandscape, draftCols, draftRows)
-                }) { Text("Apply", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmPending = false }) {
-                    Text("Cancel", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                }
-            },
+            }),
         )
+    }
+    }
+    // 3.1 Phase C: Glass3 dialog (title + one-sentence summary +
+    // expandable list + Cancel text button + one filled button).
+    if (confirmPending) {
+        val roles = LocalAccentRoles.current
+        Dialog(onDismissRequest = { confirmPending = false }) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .glass(GlassLevel.GLASS3, HavenRadii.dialogShape())
+                    .padding(24.dp),
+            ) {
+                Text("Shrink the grid?", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    repeat(minOf(movedCount, 12)) {
+                        Box(
+                            Modifier.size(16.dp).padding(end = 2.dp).clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(moveSentence, fontSize = 14.sp)
+                if (moveEntries.size > 8) {
+                    Spacer(Modifier.height(4.dp))
+                    MoveDestinationsText(
+                        destinations = moveDestinations,
+                        todayOn = state.todayOn,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 24.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { confirmPending = false }) {
+                        Text("Cancel", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            confirmPending = false
+                            draftLayer?.discard()
+                            onSpotlight()
+                            onCommit(tabLandscape, draftCols, draftRows)
+                        },
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = Color(roles.accent),
+                            contentColor = Color(roles.onAccent),
+                        ),
+                    ) { Text("Apply", fontWeight = FontWeight.Bold) }
+                }
+            }
+        }
+    }
+    // 3.1 A9: density reset confirmation. Grids are per-orientation,
+    // so one tap resets exactly one custom size (this tab's grid);
+    // Keep is the default (dismiss), Reset commits through the same
+    // undoable GridChange path, so toolbar Undo restores it.
+    if (followDensityPending) {
+        val roles = LocalAccentRoles.current
+        Dialog(onDismissRequest = { followDensityPending = false }) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .glass(GlassLevel.GLASS3, HavenRadii.dialogShape())
+                    .padding(24.dp),
+            ) {
+                Text("Follow density?", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Text("Density will reset 1 custom size. Keep it or reset?", fontSize = 14.sp)
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 24.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { followDensityPending = false }) {
+                        Text("Keep", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            followDensityPending = false
+                            draftLayer?.discard()
+                            onFollowDensity(tabLandscape)
+                            draftEpoch++
+                        },
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = Color(roles.accent),
+                            contentColor = Color(roles.onAccent),
+                        ),
+                    ) { Text("Reset", fontWeight = FontWeight.Bold) }
+                }
+            }
+        }
     }
 }
 
@@ -791,7 +1037,7 @@ private fun SpacingRow(
  * Widget frame: radius / background / transparency. Honest scope — these
  * keys are Partial in AUDIT-M6 (only a Settings sample reads them; no
  * real home widget does yet), so the preview is a live preview card and
- * the ⓘ says so. Solid ignores transparency, so that slider disables.
+ * the help text says so. Solid ignores transparency, so that slider disables.
  */
 @Composable
 private fun WidgetFrameRows(
@@ -916,61 +1162,59 @@ private fun WeatherCityDialog(
     var results by remember { mutableStateOf<List<Triple<String, Double, Double>>>(emptyList()) }
     var searched by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Weather city", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
-        text = {
-            Column {
+    HavenGlassDialog(
+        onDismiss = onDismiss,
+        title = "Weather city",
+        buttons = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = scheme.onSurface.copy(alpha = 0.6f))
+            }
+        },
+        content = {
+            Text(
+                "Type a city — no location permission is used. Needs internet.",
+                color = scheme.onSurface.copy(alpha = 0.65f),
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("City name", fontSize = 12.sp) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = {
+                if (query.isBlank() || searching) return@TextButton
+                searching = true
+                scope.launch {
+                    val found = withContext(Dispatchers.IO) { WeatherNet.geocode(query.trim(), 5) }
+                    results = found
+                    searched = true
+                    searching = false
+                }
+            }) {
                 Text(
-                    "Type a city — no location permission is used. Needs internet.",
+                    if (searching) "Searching…" else "Search",
+                    color = scheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            if (searched && results.isEmpty()) {
+                Text(
+                    "No matches — check the spelling or connection.",
                     color = scheme.onSurface.copy(alpha = 0.65f),
                     fontSize = 12.sp,
                 )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { Text("City name", fontSize = 12.sp) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = {
-                    if (query.isBlank() || searching) return@TextButton
-                    searching = true
-                    scope.launch {
-                        val found = withContext(Dispatchers.IO) { WeatherNet.geocode(query.trim(), 5) }
-                        results = found
-                        searched = true
-                        searching = false
-                    }
-                }) {
-                    Text(
-                        if (searching) "Searching…" else "Search",
-                        color = scheme.primary,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                if (searched && results.isEmpty()) {
-                    Text(
-                        "No matches — check the spelling or connection.",
-                        color = scheme.onSurface.copy(alpha = 0.65f),
-                        fontSize = 12.sp,
-                    )
-                }
-                for ((label, lat, lon) in results) {
-                    Row(
-                        Modifier.fillMaxWidth().clickable { onPick(label, lat, lon) }
-                            .padding(vertical = 10.dp),
-                    ) {
-                        Text(label, fontSize = 14.sp)
-                    }
-                }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = scheme.onSurface.copy(alpha = 0.6f))
+            for ((label, lat, lon) in results) {
+                Row(
+                    Modifier.fillMaxWidth().clickable { onPick(label, lat, lon) }
+                        .padding(vertical = 10.dp),
+                ) {
+                    Text(label, fontSize = 14.sp)
+                }
             }
         },
     )

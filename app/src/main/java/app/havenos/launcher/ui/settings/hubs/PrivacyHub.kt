@@ -36,10 +36,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.havenos.launcher.HavenApp
+import app.havenos.launcher.data.AssistFeatureId
 import app.havenos.launcher.data.encodeMembers
 import app.havenos.launcher.data.hiddenApps
 import app.havenos.launcher.data.parseMembers
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.launch
+import app.havenos.launcher.ui.assist.AssistLedgerState
+import app.havenos.launcher.ui.assist.clearAssistLearnedData
+import app.havenos.launcher.ui.assist.ledgerEntries
+import app.havenos.launcher.ui.glass.HavenHelp
+import app.havenos.launcher.ui.glass.HavenSwitch
 import app.havenos.launcher.ui.settings.shell.SearchEntry
 
 // ---------------------------------------------------------------------------
@@ -66,6 +75,7 @@ val PrivacySearchEntries: List<SearchEntry> = listOf(
     SearchEntry("Biometric lock", listOf("biometric", "lock", "hidden", "credential", "fingerprint", "face"), "Privacy", "biometricLock"),
     SearchEntry("Lock layout", listOf("lock", "layout", "prevent", "move", "edit"), "Privacy", "lockLayout"),
     SearchEntry("Unhide all", listOf("unhide", "all", "hidden", "restore", "show"), "Privacy", "unhideAll"),
+    SearchEntry("AI Privacy Ledger", listOf("assist", "ledger", "learned", "data", "on-device", "prediction", "chat"), "Privacy", "aiLedger"),
 )
 
 @Composable
@@ -75,7 +85,9 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
     val settings = app.settings
     val state by settings.state.collectAsState()
     val apps by app.appRepo.apps.collectAsState()
+    val stats by app.appRepo.stats.collectAsState()
     val scope = rememberCoroutineScope()
+    var ledgerMsg by remember { mutableStateOf<String?>(null) }
 
     val hiddenKeys = remember(state.hiddenJson) { parseMembers(state.hiddenJson) }
     val hiddenSet = remember(hiddenKeys) { hiddenKeys.toSet() }
@@ -161,7 +173,7 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
         "$count ${if (count == 1) "app" else "apps"} hidden"
 
     var showMore by remember { mutableStateOf(false) }
-    var helpFor by remember { mutableStateOf<String?>(null) }
+    // 3.1 Phase C: inline help expansions replaced by HavenHelp popovers; no helpFor state.
 
     Column(
         Modifier
@@ -169,8 +181,6 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
-        PrivacyHubHeader("Privacy", onBack)
-        Spacer(Modifier.height(12.dp))
 
         // Hidden apps, with search. Blank query = the hidden list; a query
         // searches every installed app so an app can be hidden from here.
@@ -201,8 +211,6 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                     title = "Hidden apps locked",
                     value = "${hiddenKeys.size} hidden",
                     help = null,
-                    helpOpen = false,
-                    onHelp = {},
                     actionLabel = "Unlock",
                     onAction = { runCredentialPrompt() },
                 )
@@ -213,8 +221,6 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                         title = label,
                         value = "Hidden",
                         help = null,
-                        helpOpen = false,
-                        onHelp = {},
                         actionLabel = "Unhide",
                         onAction = {
                             val prev = state.hiddenJson
@@ -246,8 +252,6 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                         title = entry.label,
                         value = if (isHidden) "Hidden" else "Shown",
                         help = null,
-                        helpOpen = false,
-                        onHelp = {},
                         actionLabel = if (isHidden) "Unhide" else "Hide",
                         onAction = {
                             val prev = state.hiddenJson
@@ -295,8 +299,6 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             enabled = biometricAvailable,
             reason = if (biometricAvailable) null else biometricReason,
             help = "Needs device credential to view hidden apps.",
-            helpOpen = helpFor == "biometricLock",
-            onHelp = { helpFor = if (helpFor == "biometricLock") null else "biometricLock" },
             onChange = {
                 onSpotlight("biometricLock")
                 scope.launch { settings.setHiddenLock(it) }
@@ -306,8 +308,6 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             title = "Test lock",
             value = if (state.hiddenLock) "Locked" else "Off",
             help = "Runs the real device-credential prompt.",
-            helpOpen = helpFor == "testLock",
-            onHelp = { helpFor = if (helpFor == "testLock") null else "testLock" },
             actionLabel = "Test",
             onAction = { runCredentialPrompt() },
         )
@@ -321,8 +321,6 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             enabled = true,
             reason = null,
             help = "Stops moving, adding or removing home items.",
-            helpOpen = helpFor == "lockLayout",
-            onHelp = { helpFor = if (helpFor == "lockLayout") null else "lockLayout" },
             onChange = {
                 val prevHidden = state.hiddenJson
                 val prevLayout = state.lockLayout
@@ -335,6 +333,69 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             },
         )
 
+        // 3.1 Phase F (F4): the AI Privacy Ledger. Every assist feature,
+        // what local data it reads, its on-device badge, last used time,
+        // a per-feature switch, and Clear learned data. Rows record
+        // counts and times only, never content.
+        Spacer(Modifier.height(16.dp))
+        PrivacySectionLabel("AI Privacy Ledger")
+        Text(
+            "Every assist feature runs on this device. Nothing is sent anywhere.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        val ledgerState = AssistLedgerState(
+            searchCommandsEnabled = state.assistSearchCommands,
+            predictionEnabled = state.assistPrediction,
+            chatEnabled = state.assistChat,
+            findEnabled = state.mascotFindOn,
+            suggestionsEnabled = state.mascotTips != 0,
+            lastUsedJson = state.assistLastUsedJson,
+            countsJson = state.assistCountsJson,
+        )
+        for (entry in ledgerEntries(ledgerState, stats)) {
+            PrivacySwitchRow(
+                title = entry.title,
+                value = ledgerValueText(entry.lastUsedMs, entry.useCount),
+                checked = entry.enabled,
+                enabled = true,
+                reason = "On-device · ${entry.dataReads}",
+                help = when (entry.feature) {
+                    AssistFeatureId.SUGGESTIONS ->
+                        "Switching back on restores Rare; full Off / Rare / Normal lives in Mascot."
+                    else -> null
+                },
+                onChange = {
+                    onSpotlight("aiLedger")
+                    scope.launch {
+                        when (entry.feature) {
+                            AssistFeatureId.SEARCH_COMMANDS -> settings.setAssistSearchCommands(it)
+                            AssistFeatureId.APP_PREDICTION -> settings.setAssistPrediction(it)
+                            AssistFeatureId.MASCOT_FIND -> settings.setMascotFindOn(it)
+                            AssistFeatureId.MASCOT_CHAT -> settings.setAssistChat(it)
+                            AssistFeatureId.SUGGESTIONS -> settings.setMascotTips(if (it) 1 else 0)
+                        }
+                    }
+                },
+            )
+        }
+        PrivacyActionRow(
+            title = "Clear learned data",
+            value = "${stats.values.sumOf { it.first }} launches",
+            help = "Wipes launch history and ledger counts/times. Mascot muted lists are preferences and stay.",
+            actionLabel = "Clear",
+            onAction = {
+                onSpotlight("aiLedger")
+                scope.launch {
+                    clearAssistLearnedData(settings, app.appRepo)
+                    ledgerMsg = "Learned data cleared."
+                }
+            },
+        )
+        if (ledgerMsg != null) {
+            Text(ledgerMsg!!, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = { showMore = !showMore }) {
             Text(if (showMore) "Fewer options" else "More options")
@@ -344,8 +405,6 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                 title = "Unhide all",
                 value = hiddenCountMsg(state.hiddenApps().size),
                 help = "Shows every hidden app again.",
-                helpOpen = helpFor == "unhideAll",
-                onHelp = { helpFor = if (helpFor == "unhideAll") null else "unhideAll" },
                 actionLabel = "Unhide all",
                 onAction = {
                     recordChange(state.hiddenJson, state.lockLayout, "0 apps hidden")
@@ -358,12 +417,16 @@ fun PrivacyHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
     }
 }
 
-@Composable
-private fun PrivacyHubHeader(title: String, onBack: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        TextButton(onClick = onBack) { Text("‹ Back") }
-        Text(title, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+
+/** Ledger row value: last used time + use count, or "Never used". */
+private fun ledgerValueText(lastUsedMs: Long, count: Int): String {
+    if (lastUsedMs <= 0L && count <= 0) return "Never used"
+    val whenText = if (lastUsedMs > 0L) {
+        SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()).format(Date(lastUsedMs))
+    } else {
+        "Never"
     }
+    return "Last used $whenText · ${count}×"
 }
 
 @Composable
@@ -377,7 +440,7 @@ private fun PrivacySectionLabel(text: String) {
     )
 }
 
-/** Title + live value + optional ⓘ help (≤90 chars) + Switch. Never a dead switch. */
+/** Title + live value + optional help (≤90 chars) + Switch. Never a dead switch. */
 @Composable
 private fun PrivacySwitchRow(
     title: String,
@@ -386,8 +449,6 @@ private fun PrivacySwitchRow(
     enabled: Boolean,
     reason: String?,
     help: String?,
-    helpOpen: Boolean,
-    onHelp: () -> Unit,
     onChange: (Boolean) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -398,9 +459,7 @@ private fun PrivacySwitchRow(
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    if (help != null) {
-                        TextButton(onClick = onHelp) { Text("ⓘ", fontSize = 14.sp) }
-                    }
+                    if (help != null) HavenHelp(helpText = help)
                 }
                 if (reason != null) {
                     Text(reason, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -412,10 +471,7 @@ private fun PrivacySwitchRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(end = 8.dp),
             )
-            Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
-        }
-        if (helpOpen && help != null) {
-            Text(help, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            HavenSwitch(checked = checked, enabled = enabled, onChange = onChange)
         }
     }
 }
@@ -426,8 +482,6 @@ private fun PrivacyActionRow(
     title: String,
     value: String,
     help: String?,
-    helpOpen: Boolean,
-    onHelp: () -> Unit,
     actionLabel: String,
     onAction: () -> Unit,
 ) {
@@ -444,9 +498,7 @@ private fun PrivacyActionRow(
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    if (help != null) {
-                        TextButton(onClick = onHelp) { Text("ⓘ", fontSize = 14.sp) }
-                    }
+                    if (help != null) HavenHelp(helpText = help)
                 }
             }
             Text(
@@ -456,9 +508,6 @@ private fun PrivacyActionRow(
                 modifier = Modifier.padding(end = 4.dp),
             )
             TextButton(onClick = onAction) { Text(actionLabel) }
-        }
-        if (helpOpen && help != null) {
-            Text(help, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

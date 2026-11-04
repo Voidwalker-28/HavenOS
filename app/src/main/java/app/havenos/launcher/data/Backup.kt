@@ -1,6 +1,7 @@
 package app.havenos.launcher.data
 
 import app.havenos.launcher.HavenApp
+import app.havenos.launcher.ui.glass.accentSelectionOf
 import app.havenos.launcher.ui.parseSnapshot
 import app.havenos.launcher.ui.snapshotJson
 import org.json.JSONObject
@@ -52,6 +53,11 @@ suspend fun buildBackupJson(app: HavenApp, state: SettingsState, includeWallpape
     s.put("iconPack", state.iconPack); s.put("monoIcons", state.monoIcons)
     s.put("badgeMode", state.badgeMode)
     s.put("gesturesJson", state.gesturesJson)
+    // 3.1 Phase B7 accent selection. Old backups lack these keys; the
+    // has() guards in applyBackupJson leave current values untouched.
+    s.put("accentSource", state.accentSource); s.put("accentCurated", state.accentCurated)
+    s.put("accentCustomArgb", state.accentCustomArgb); s.put("accentStrength", state.accentStrength)
+    s.put("accentRecents", state.accentRecents)
     // M7 Wave 2 keys. Every key is written unconditionally (not only
     // when non-default) so a restore is exact; old backups simply lack
     // these entries and the has() guards in applyBackupJson leave the
@@ -228,6 +234,17 @@ suspend fun applyBackupJson(app: HavenApp, json: String): Boolean {
         if (s.has("monoIcons")) st.setMonoIcons(s.optBoolean("monoIcons", false))
         if (s.has("badgeMode")) st.setBadgeMode(s.optInt("badgeMode", 1))
         if (s.has("gesturesJson")) st.setGesturesJson(s.optString("gesturesJson", DEFAULT_GESTURES))
+        if (s.has("accentSource")) {
+            st.setAccentSelection(
+                accentSelectionOf(
+                    s.optString("accentSource", "curated"),
+                    s.optString("accentCurated", "Ember"),
+                    s.optInt("accentCustomArgb", 0),
+                    s.optInt("accentStrength", 0),
+                    s.optString("accentRecents", ""),
+                ),
+            )
+        }
         // M7 Wave 2 keys. Setters normalize labelMode / libraryDefaultView,
         // so a hand-edited backup with an unknown value lands on the default.
         // Absent keys (any pre-Wave-2 backup) are skipped, never reset.

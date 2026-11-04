@@ -42,11 +42,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -88,6 +88,10 @@ import app.havenos.launcher.data.WeatherNet
 import app.havenos.launcher.data.parseAllowedCalendars
 import app.havenos.launcher.data.weatherInfo
 import app.havenos.launcher.theme.GlassSurface
+import app.havenos.launcher.ui.glass.HavenDialogFilledButton
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.vector
 import app.havenos.launcher.theme.LocalFont
 import app.havenos.launcher.theme.LocalPalette
 import app.havenos.launcher.theme.LocalState
@@ -350,7 +354,7 @@ private fun FlipClockFace(now: Long, is24: Boolean, palette: Palette) {
 @Composable
 private fun FlipTile(text: String) {
     Box(
-        Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xFF17181C)).padding(horizontal = 12.dp, vertical = 8.dp),
+        Modifier.clip(RoundedCornerShape(10.dp)).background(FlipTileBackground).padding(horizontal = 12.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(text, color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, maxLines = 1)
@@ -568,7 +572,14 @@ private fun NowPlayingWidget(modifier: Modifier) {
                             Box(
                                 Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)).background(palette.accent),
                                 contentAlignment = Alignment.Center,
-                            ) { Text("♪", color = Color.White, fontSize = 24.sp) }
+                            ) {
+                                Icon(
+                                    HavenIcon.Music.vector(),
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            }
                         }
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
@@ -723,41 +734,39 @@ private fun CountdownWidget(app: HavenApp, item: HomeItem, modifier: Modifier) {
     }
 
     if (showEdit) {
-        AlertDialog(
-            onDismissRequest = { showEdit = false },
-            title = { Text("Countdown") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = editLabel,
-                        onValueChange = { editLabel = it },
-                        label = { Text("Label") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        if (editTarget > 0L) {
-                            "Target: ${SimpleDateFormat("EEE, MMM d, yyyy", Locale.getDefault()).format(Date(editTarget))} (00:00)"
-                        } else {
-                            "No date set"
-                        },
-                        color = palette.muted, fontSize = 12.sp,
-                    )
-                    TextButton(onClick = { showDatePicker = true }) { Text("Pick date") }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
+        HavenGlassDialog(
+            onDismiss = { showEdit = false },
+            title = "Countdown",
+            buttons = {
+                TextButton(onClick = { showEdit = false }) { Text("Cancel") }
+                HavenDialogFilledButton(label = "Save", onClick = {
                     showEdit = false
                     val payload = JSONObject()
                         .put("label", editLabel.ifBlank { "Countdown" })
                         .put("target", editTarget)
                         .toString()
                     scope.launch { app.db.homeItems().upsertAll(listOf(item.copy(payload = payload))) }
-                }) { Text("Save") }
+                })
             },
-            dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } },
+            content = {
+                OutlinedTextField(
+                    value = editLabel,
+                    onValueChange = { editLabel = it },
+                    label = { Text("Label") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (editTarget > 0L) {
+                        "Target: ${SimpleDateFormat("EEE, MMM d, yyyy", Locale.getDefault()).format(Date(editTarget))} (00:00)"
+                    } else {
+                        "No date set"
+                    },
+                    color = palette.muted, fontSize = 12.sp,
+                )
+                TextButton(onClick = { showDatePicker = true }) { Text("Pick date") }
+            },
         )
     }
 
@@ -818,10 +827,17 @@ private fun TasksWidget(app: HavenApp, modifier: Modifier) {
     }
 
     if (showAdd) {
-        AlertDialog(
-            onDismissRequest = { showAdd = false },
-            title = { Text("New task") },
-            text = {
+        HavenGlassDialog(
+            onDismiss = { showAdd = false },
+            title = "New task",
+            buttons = {
+                TextButton(onClick = { showAdd = false }) { Text("Cancel") }
+                HavenDialogFilledButton(label = "Add", onClick = {
+                    app.tasks.add(newText)
+                    showAdd = false
+                })
+            },
+            content = {
                 OutlinedTextField(
                     value = newText,
                     onValueChange = { newText = it },
@@ -830,13 +846,6 @@ private fun TasksWidget(app: HavenApp, modifier: Modifier) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    app.tasks.add(newText)
-                    showAdd = false
-                }) { Text("Add") }
-            },
-            dismissButton = { TextButton(onClick = { showAdd = false }) { Text("Cancel") } },
         )
     }
 }
@@ -865,10 +874,17 @@ private fun NotesWidget(app: HavenApp, item: HomeItem, modifier: Modifier) {
     }
 
     if (showEdit) {
-        AlertDialog(
-            onDismissRequest = { showEdit = false },
-            title = { Text("Note") },
-            text = {
+        HavenGlassDialog(
+            onDismiss = { showEdit = false },
+            title = "Note",
+            buttons = {
+                TextButton(onClick = { showEdit = false }) { Text("Cancel") }
+                HavenDialogFilledButton(label = "Save", onClick = {
+                    showEdit = false
+                    scope.launch { app.db.homeItems().upsertAll(listOf(item.copy(payload = editText))) }
+                })
+            },
+            content = {
                 OutlinedTextField(
                     value = editText,
                     onValueChange = { editText = it },
@@ -876,13 +892,6 @@ private fun NotesWidget(app: HavenApp, item: HomeItem, modifier: Modifier) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    showEdit = false
-                    scope.launch { app.db.homeItems().upsertAll(listOf(item.copy(payload = editText))) }
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } },
         )
     }
 }
@@ -953,23 +962,21 @@ private fun GalleryWidget(app: HavenApp, item: HomeItem, modifier: Modifier) {
     }
 
     if (showDialog) {
-        AlertDialog(
-            onDismissRequest = { showDialog = false },
-            title = { Text("Gallery photo") },
-            text = { Text("Pick an image to show in this widget.", color = palette.muted, fontSize = 13.sp) },
-            confirmButton = {
-                TextButton(onClick = { picker.launch(arrayOf("image/*")) }) { Text("Choose image") }
-            },
-            dismissButton = {
-                Row {
-                    if (item.payload.isNotBlank()) {
-                        TextButton(onClick = {
-                            showDialog = false
-                            scope.launch { app.db.homeItems().upsertAll(listOf(item.copy(payload = ""))) }
-                        }) { Text("Clear") }
-                    }
-                    TextButton(onClick = { showDialog = false }) { Text("Cancel") }
+        HavenGlassDialog(
+            onDismiss = { showDialog = false },
+            title = "Gallery photo",
+            buttons = {
+                TextButton(onClick = { showDialog = false }) { Text("Cancel") }
+                if (item.payload.isNotBlank()) {
+                    TextButton(onClick = {
+                        showDialog = false
+                        scope.launch { app.db.homeItems().upsertAll(listOf(item.copy(payload = ""))) }
+                    }) { Text("Clear") }
                 }
+                HavenDialogFilledButton(label = "Choose image", onClick = { picker.launch(arrayOf("image/*")) })
+            },
+            content = {
+                Text("Pick an image to show in this widget.", color = palette.muted, fontSize = 13.sp)
             },
         )
     }
@@ -1114,12 +1121,21 @@ private fun ClockPageWidget(
             Text(dateFmt.format(Date(now)), color = palette.muted, fontSize = 15.sp, maxLines = 1)
             val w = weather
             if (w != null) {
-                val (wlabel, wsymbol) = weatherInfo(w.code)
+                val (wlabel, wkind) = weatherInfo(w.code)
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    "$wsymbol ${formatTempDisplay(w.temp, state.weatherUnits)} $wlabel · ${localityOnly(w.cityName)}",
-                    color = palette.onSurface, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        weatherIcon(wkind).vector(),
+                        contentDescription = wlabel,
+                        tint = palette.onSurface,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "${formatTempDisplay(w.temp, state.weatherUnits)} $wlabel · ${localityOnly(w.cityName)}",
+                        color = palette.onSurface, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             if (shortcuts.isNotEmpty()) {
                 Spacer(Modifier.height(24.dp))
@@ -1349,53 +1365,49 @@ private fun StackEditorDialog(
     unstackEnabled: Boolean,
 ) {
     val palette = LocalPalette.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Edit stack") },
-        text = {
-            Column {
-                if (members.isEmpty()) {
-                    Text("Empty stack", color = palette.muted, fontSize = 13.sp)
-                }
-                for ((i, kind) in members.withIndex()) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            stackKindLabel(kind), color = palette.onSurface, fontSize = 14.sp,
-                            modifier = Modifier.weight(1f), maxLines = 1,
-                        )
-                        TextButton(
-                            enabled = i > 0,
-                            onClick = { onMembersChange(stackReordered(members, i, i - 1)) },
-                        ) { Text("↑", fontSize = 14.sp) }
-                        TextButton(
-                            enabled = i < members.size - 1,
-                            onClick = { onMembersChange(stackReordered(members, i, i + 1)) },
-                        ) { Text("↓", fontSize = 14.sp) }
-                        TextButton(
-                            enabled = members.size > 1,
-                            onClick = { onMembersChange(members.filterIndexed { idx, _ -> idx != i }) },
-                        ) { Text("Remove", fontSize = 12.sp) }
-                    }
-                }
-                if (!unstackEnabled && members.size >= 2) {
-                    Spacer(Modifier.height(6.dp))
+    HavenGlassDialog(
+        onDismiss = onDismiss,
+        title = "Edit stack",
+        buttons = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(enabled = unstackEnabled, onClick = onUnstack) { Text("Unstack") }
+            HavenDialogFilledButton(label = "Save", enabled = members.isNotEmpty(), onClick = onSave)
+        },
+        content = {
+            if (members.isEmpty()) {
+                Text("Empty stack", color = palette.muted, fontSize = 13.sp)
+            }
+            for ((i, kind) in members.withIndex()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
-                        "Unstack is unavailable until every member fits on this page.",
-                        color = palette.muted, fontSize = 12.sp,
+                        stackKindLabel(kind), color = palette.onSurface, fontSize = 14.sp,
+                        modifier = Modifier.weight(1f), maxLines = 1,
                     )
+                    TextButton(
+                        enabled = i > 0,
+                        onClick = { onMembersChange(stackReordered(members, i, i - 1)) },
+                    ) { Text("↑", fontSize = 14.sp) }
+                    TextButton(
+                        enabled = i < members.size - 1,
+                        onClick = { onMembersChange(stackReordered(members, i, i + 1)) },
+                    ) { Text("↓", fontSize = 14.sp) }
+                    TextButton(
+                        enabled = members.size > 1,
+                        onClick = { onMembersChange(members.filterIndexed { idx, _ -> idx != i }) },
+                    ) { Text("Remove", fontSize = 12.sp) }
                 }
             }
-        },
-        confirmButton = {
-            Row {
-                TextButton(enabled = unstackEnabled, onClick = onUnstack) { Text("Unstack") }
-                TextButton(enabled = members.isNotEmpty(), onClick = onSave) { Text("Save") }
+            if (!unstackEnabled && members.size >= 2) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Unstack is unavailable until every member fits on this page.",
+                    color = palette.muted, fontSize = 12.sp,
+                )
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -1466,15 +1478,24 @@ private fun AtAGlanceWidget(app: HavenApp, modifier: Modifier) {
             }
             val w = weather
             if (state.weatherNetwork && w != null) {
-                val (label, symbol) = weatherInfo(w.code)
-                Text(
-                    "$symbol ${formatTempDisplay(w.temp, state.weatherUnits)} · $label",
-                    color = palette.onSurface,
-                    fontFamily = LocalFont.current,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                val (label, wkind) = weatherInfo(w.code)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        weatherIcon(wkind).vector(),
+                        contentDescription = label,
+                        tint = palette.onSurface,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "${formatTempDisplay(w.temp, state.weatherUnits)} · $label",
+                        color = palette.onSurface,
+                        fontFamily = LocalFont.current,
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }

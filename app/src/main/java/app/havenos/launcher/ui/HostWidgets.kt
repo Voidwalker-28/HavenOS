@@ -26,12 +26,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -44,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -53,6 +55,12 @@ import app.havenos.launcher.data.HomeItem
 import app.havenos.launcher.data.ItemKind
 import app.havenos.launcher.theme.GlassSurface
 import app.havenos.launcher.theme.LocalPalette
+import app.havenos.launcher.ui.glass.GlassLevel
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
+import app.havenos.launcher.ui.glass.glass
+import app.havenos.launcher.ui.glass.glassTintAlpha
+import app.havenos.launcher.ui.glass.glassTintBase
 import app.havenos.launcher.theme.LocalState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -583,18 +591,52 @@ fun AddWidgetSheet(
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    // 3.1 Phase C: Glass2 sheet — the bottom sheet's container takes
+    // the Glass2 tint (same luminance rule as the drawer sheet), and
+    // the search field becomes a filled glass field. Previews and the
+    // size chips below are unchanged.
+    val sheetDark = with(palette.bg) { red * 0.299f + green * 0.587f + blue * 0.114f < 0.5f }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = glassTintBase(GlassLevel.GLASS2, sheetDark)
+            .copy(alpha = glassTintAlpha(GlassLevel.GLASS2, sheetDark)),
+    ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             Text("Add widget", color = palette.onSurface, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = pickerQuery,
-                onValueChange = { pickerQuery = it },
-                placeholder = { Text("Search widgets") },
-                singleLine = true,
-                shape = RoundedCornerShape(50),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Box(
+                Modifier.fillMaxWidth().height(56.dp)
+                    .glass(GlassLevel.GLASS2, RoundedCornerShape(50)),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    HavenIconImage(HavenIcon.Search, "Search", size = 20.dp)
+                    Spacer(Modifier.width(8.dp))
+                    BasicTextField(
+                        value = pickerQuery,
+                        onValueChange = { pickerQuery = it },
+                        singleLine = true,
+                        textStyle = TextStyle(color = palette.onSurface, fontSize = 15.sp),
+                        modifier = Modifier.weight(1f),
+                        decorationBox = { inner ->
+                            if (pickerQuery.isEmpty()) {
+                                Text("Search widgets", color = palette.muted, fontSize = 15.sp)
+                            }
+                            inner()
+                        },
+                    )
+                    if (pickerQuery.isNotEmpty()) {
+                        HavenIconImage(
+                            HavenIcon.Close, "Clear search", size = 20.dp,
+                            modifier = Modifier.clickable { pickerQuery = "" },
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(8.dp))
             if (bindError != null) {
                 Text(

@@ -33,8 +33,65 @@ enum class ApiErrorKind {
     RATE_LIMITED,
     /** HTTP 404 — for the dictionary this is "word not found", not a crash. */
     NOT_FOUND,
+    /** HTTP 5xx — the server failed; retrying immediately will not help. */
+    SERVER_ERROR,
     /** Any other HTTP status, or a malformed URL. */
     OTHER,
+}
+
+/**
+ * 3.1 Phase A2: the single classification of an API outcome, used by
+ * every card and by the Diagnostics row. [OFFLINE] is produced ONLY
+ * when the device has no validated internet network — a transport
+ * failure while validated means [NETWORK_ERROR] (host unreachable),
+ * never offline. Parse failures are recorded by the caller that
+ * actually parsed (cache-first flow), because the transport layer
+ * never sees the shape.
+ */
+enum class ApiFailureClass {
+    OFFLINE,
+    NETWORK_ERROR,
+    RATE_LIMITED,
+    NOT_FOUND,
+    PARSE_ERROR,
+    SERVER_ERROR,
+    OTHER,
+}
+
+/**
+ * Pure classifier: transport kind + HTTP code + validated-network
+ * flag → the class the card renders. No Android calls, so it is
+ * unit-testable without a device. In particular, OFFLINE is never
+ * produced when [hasValidatedInternet] is true.
+ */
+fun classifyFailure(
+    kind: ApiErrorKind,
+    httpCode: Int,
+    hasValidatedInternet: Boolean,
+): ApiFailureClass = when (kind) {
+    ApiErrorKind.RATE_LIMITED -> ApiFailureClass.RATE_LIMITED
+    ApiErrorKind.NOT_FOUND -> ApiFailureClass.NOT_FOUND
+    ApiErrorKind.SERVER_ERROR -> ApiFailureClass.SERVER_ERROR
+    ApiErrorKind.OFFLINE ->
+        if (hasValidatedInternet) ApiFailureClass.NETWORK_ERROR else ApiFailureClass.OFFLINE
+    ApiErrorKind.OTHER ->
+        if (httpCode in 500..599) ApiFailureClass.SERVER_ERROR else ApiFailureClass.OTHER
+}
+
+/**
+ * True when the device currently has a validated internet network
+ * (ConnectivityManager network capabilities). Never throws; false on
+ * any error, so a failed check degrades to the offline path rather
+ * than crashing the card. Requires ACCESS_NETWORK_STATE (normal
+ * permission, no runtime prompt).
+ */
+fun android.content.Context.hasValidatedInternet(): Boolean = try {
+    val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+        as? android.net.ConnectivityManager ?: return false
+    val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+} catch (t: Throwable) {
+    false
 }
 
 sealed interface ApiResult {
@@ -176,6 +233,7 @@ object ApiClient {
                 code == 429 -> ApiResult.Failure(ApiErrorKind.RATE_LIMITED, code)
                 code == 404 -> ApiResult.Failure(ApiErrorKind.NOT_FOUND, code)
                 code in 300..399 -> ApiResult.Failure(ApiErrorKind.OTHER, code)
+                code in 500..599 -> ApiResult.Failure(ApiErrorKind.SERVER_ERROR, code)
                 else -> ApiResult.Failure(ApiErrorKind.OTHER, code)
             }
         } catch (e: UnknownHostException) {

@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,9 +26,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,14 +44,41 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.havenos.launcher.HavenAccessibilityService
 import app.havenos.launcher.HavenApp
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.vector
 import app.havenos.launcher.data.iconDp
+import app.havenos.launcher.gestureServicePaused
 import app.havenos.launcher.data.parseGestures
 import app.havenos.launcher.data.parseMembers
 import app.havenos.launcher.data.parseProfiles
 import app.havenos.launcher.isNavServiceEnabled
+import app.havenos.launcher.theme.LocalAccentRoles
 import app.havenos.launcher.theme.LocalFont
 import app.havenos.launcher.theme.LocalPalette
+import app.havenos.launcher.data.AssistFeatureId
+import app.havenos.launcher.ui.assist.AssistAction
+import app.havenos.launcher.ui.assist.AssistCommand
+import app.havenos.launcher.ui.assist.AssistContext
+import app.havenos.launcher.ui.assist.applyAssistSettingAction
+import app.havenos.launcher.ui.assist.effectiveIconDp
+import app.havenos.launcher.ui.assist.parseAssistCommands
+import androidx.compose.ui.text.style.TextOverflow
+import app.havenos.launcher.ui.glass.CURATED_ACCENTS
+import app.havenos.launcher.ui.glass.GlassCard
+import app.havenos.launcher.ui.toLibraryApp
+import app.havenos.launcher.ui.glass.GlassLevel
+import app.havenos.launcher.ui.glass.GroupedSection
+import app.havenos.launcher.ui.glass.HavenBanner
+import app.havenos.launcher.ui.glass.HavenIconTile
+import app.havenos.launcher.ui.glass.HavenNavRow
+import app.havenos.launcher.ui.glass.HavenRadii
+import app.havenos.launcher.ui.glass.HavenSegmentedRow
+import app.havenos.launcher.ui.glass.HavenSliderRow
+import app.havenos.launcher.ui.glass.HavenSpacing
+import app.havenos.launcher.ui.glass.HavenSwitchRow
+import app.havenos.launcher.ui.glass.HavenType
 import app.havenos.launcher.ui.settings.hubs.ApiHubScreen
 import app.havenos.launcher.ui.settings.hubs.ApiSearchEntries
 import app.havenos.launcher.ui.settings.hubs.DeviceDataHubScreen
@@ -62,6 +91,8 @@ import app.havenos.launcher.ui.settings.hubs.HomeDockHubScreen
 import app.havenos.launcher.ui.settings.hubs.HomeDockSearchEntries
 import app.havenos.launcher.ui.settings.hubs.LookHubScreen
 import app.havenos.launcher.ui.settings.hubs.LookSearchEntries
+import app.havenos.launcher.ui.settings.hubs.MascotHubScreen
+import app.havenos.launcher.ui.settings.hubs.MascotSearchEntries
 import app.havenos.launcher.ui.settings.hubs.PrivacyHubScreen
 import app.havenos.launcher.ui.settings.hubs.PrivacySearchEntries
 import kotlinx.coroutines.launch
@@ -89,17 +120,19 @@ class HubNavigator {
     }
 }
 
-/** One hub row on the hub screen: route, display title, glyph (never a letter tile). */
-data class HubRowDef(val route: String, val title: String, val glyph: String)
+/** One hub row on the hub screen: route, display title, icon (never a letter tile). */
+data class HubRowDef(val route: String, val title: String, val icon: HavenIcon)
 
 val HUB_ROWS: List<HubRowDef> = listOf(
-    HubRowDef("look", "Look", "🎨"),
-    HubRowDef("home-dock", "Home & Dock", "🏠"),
-    HubRowDef("drawer-search", "Drawer & Search", "🔍"),
-    HubRowDef("gestures-motion", "Gestures & Motion", "👆"),
-    HubRowDef("privacy", "Privacy", "🔒"),
-    HubRowDef("device-data", "Device & Data", "💾"),
-    HubRowDef("apis", "APIs", "🌐"),
+    HubRowDef("look", "Look", HavenIcon.HubLook),
+    HubRowDef("home-dock", "Home & Dock", HavenIcon.HubHomeDock),
+    HubRowDef("drawer-search", "Drawer & Search", HavenIcon.HubDrawerSearch),
+    HubRowDef("gestures-motion", "Gestures & Motion", HavenIcon.HubGesturesMotion),
+    HubRowDef("privacy", "Privacy", HavenIcon.HubPrivacy),
+    HubRowDef("device-data", "Device & Data", HavenIcon.HubDeviceData),
+    HubRowDef("apis", "APIs", HavenIcon.HubApis),
+    // v3 Track A: Mascot hub (opt-in companion; defaults off).
+    HubRowDef("mascot", "Mascot", HavenIcon.HubMascot),
 )
 
 /** Hub route for a search entry, from its (normalized) hub display name. */
@@ -111,6 +144,7 @@ fun hubRouteForEntry(entry: SearchEntry): String = when (entry.hub) {
     "Privacy" -> "privacy"
     "Device & Data" -> "device-data"
     "APIs" -> "apis"
+    "Mascot" -> "mascot"
     else -> "home"
 }
 
@@ -123,6 +157,7 @@ val allHubSearchEntries: List<SearchEntry> = searchEntries(
     PrivacySearchEntries,
     DeviceDataEntries,
     ApiSearchEntries,
+    MascotSearchEntries,
 )
 
 /**
@@ -138,13 +173,21 @@ fun createHubRegistry(
     session: PreviewSession,
     navigator: HubNavigator,
     onTestAction: (String) -> Unit,
+    // 3.1 Phase F (F2/F3): the host's Calm entry, so a "calm" command
+    // typed in panel search can open Calm like any other action.
+    onEnterCalm: () -> Unit = {},
 ): HubScreenRegistry = HubScreenRegistry(
     mapOf(
         "home" to HubScreenDef(
             route = "home",
             title = "Settings",
             content = { _, onSpotlight ->
-                HubScreen(navigator = navigator, session = session, onSpotlight = onSpotlight)
+                HubScreen(
+                    navigator = navigator,
+                    session = session,
+                    onSpotlight = onSpotlight,
+                    onEnterCalm = onEnterCalm,
+                )
             },
         ),
         "look" to HubScreenDef(
@@ -194,6 +237,13 @@ fun createHubRegistry(
                 onReset = { app.settings.resetSection(10) },
             ),
         ),
+        // v3 Track A: Mascot hub. No panel Reset: the hub's own
+        // "Reset mascot tips & tutorials" row owns mascot resets.
+        "mascot" to HubScreenDef(
+            route = "mascot",
+            title = "Mascot",
+            content = { onBack, onSpotlight -> MascotHubScreen(onBack, onSpotlight) },
+        ),
     ),
 )
 
@@ -242,7 +292,7 @@ private fun fmtMinutes(mins: Int): String =
 /**
  * The hub screen itself: search field, at most one needs-attention
  * banner (priority: not default → missing navigation permission →
- * backup/import failed), the Minimal hero card with its accent swatch
+ * gestures paused → backup/import failed), the Minimal hero card with its accent swatch
  * strip, Quick tune, recent hub chips (local only, up to 4), the six
  * hub rows with live one-line summaries, and the Changes footer.
  */
@@ -251,6 +301,7 @@ fun HubScreen(
     navigator: HubNavigator,
     session: PreviewSession,
     onSpotlight: (String) -> Unit,
+    onEnterCalm: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as HavenApp
@@ -269,6 +320,43 @@ fun HubScreen(
         recentStore.record(title)
         recentVersion++
         navigator.open(route)
+    }
+
+    // 3.1 Phase F (F2/F3): panel-search assist commands. The panel
+    // session is active here, so setting actions applied through the
+    // typed setters land in Before/Changes/Undo automatically; the row
+    // stays on the results so Changes stays visible. App launches use
+    // the system launcher intent; a hub command navigates, except the
+    // root ("Settings") which is already on screen.
+    val panelApps by app.appRepo.apps.collectAsState()
+    val panelStats by app.appRepo.stats.collectAsState()
+    fun launchAssistApp(pkg: String) {
+        try {
+            val intent = context.packageManager.getLaunchIntentForPackage(pkg)
+                ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (intent != null) context.startActivity(intent)
+        } catch (t: Throwable) {
+            // No launch intent for this package; row does nothing.
+        }
+    }
+    fun executeAssistCommands(commands: List<AssistCommand>) {
+        recentQueries.record(query)
+        scope.launch {
+            settings.recordAssistUse(AssistFeatureId.SEARCH_COMMANDS, System.currentTimeMillis())
+        }
+        for (cmd in commands) {
+            when (val action = cmd.action) {
+                is AssistAction.OpenApp -> launchAssistApp(action.pkg)
+                is AssistAction.OpenHub -> {
+                    if (action.route != "home") {
+                        onSpotlight(action.route)
+                        openHub(action.route, action.title)
+                    }
+                }
+                is AssistAction.ToggleCalm -> onEnterCalm()
+                else -> scope.launch { applyAssistSettingAction(settings, action) }
+            }
+        }
     }
 
     var defaultTick by remember { mutableStateOf(0) }
@@ -304,10 +392,50 @@ fun HubScreen(
         SettingsSearchField(query = query, onQueryChange = { query = it })
         if (query.isNotBlank()) {
             val results = searchSettingsEntries(query, allHubSearchEntries)
+            // 3.1 Phase F (F2): command rows above the settings hits;
+            // null means "not a command" and changes nothing.
+            val assistCommands = remember(query, panelApps, panelStats, state) {
+                parseAssistCommands(
+                    query,
+                    AssistContext(
+                        apps = panelApps.map { it.toLibraryApp() },
+                        stats = panelStats,
+                        darkMode = state.darkMode,
+                        effectiveIconDp = effectiveIconDp(state.iconSizeOverride, state.density),
+                        curatedNames = CURATED_ACCENTS.map { it.name },
+                        commandsEnabled = state.assistSearchCommands,
+                    ),
+                )
+            }
+            if (assistCommands != null && assistCommands.isNotEmpty()) {
+                ShellSectionLabel(text = "Assist commands")
+                GlassCard(shape = HavenRadii.groupShape(), modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { executeAssistCommands(assistCommands) }
+                            .padding(HavenSpacing.s16),
+                        verticalArrangement = Arrangement.spacedBy(ShellSpacing.s8),
+                    ) {
+                        Text(
+                            text = assistCommands.joinToString(" · ") { it.label },
+                            style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
+                            color = tokens.textPrimary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = "Tap to apply",
+                            style = ShellText.help.copy(fontFamily = LocalFont.current),
+                            color = tokens.accent,
+                        )
+                    }
+                }
+            }
             if (results.isEmpty()) {
                 val hub = closestHub(query, allHubSearchEntries)
                 Text(
-                    text = "No results",
+                    text = "No settings match",
                     style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
                     color = tokens.textPrimary,
                 )
@@ -368,83 +496,103 @@ fun HubScreen(
         // Needs-attention banner: at most one, fixed priority.
         val isDefault = remember(defaultTick) { isDefaultLauncher(context) }
         val navPermissionMissing = state.navGesturesOn && !isNavServiceEnabled(context)
+        // 3.1 A13: permission granted but the service itself is not
+        // connected (system stopped it). Refreshed on resume, same
+        // pattern as the gestures hub's navTick, so returning from
+        // the system screen clears the banner without extra taps.
+        var navTick by remember { mutableIntStateOf(0) }
+        LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { navTick++ }
+        val gesturesPaused = remember(state.navGesturesOn, navTick) {
+            gestureServicePaused(
+                state.navGesturesOn,
+                isNavServiceEnabled(context),
+                HavenAccessibilityService.isConnected,
+            )
+        }
         val backupFailed = backupFailedFlag(context)
         when {
             !isDefault -> {
-                ShellCard {
-                    Column {
-                        Text(
-                            text = "HavenOS is not the default launcher.",
-                            style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                            color = tokens.textPrimary,
-                        )
-                        Text(
-                            text = "Home-button presses still open the old launcher.",
-                            style = ShellText.help.copy(fontFamily = LocalFont.current),
-                            color = tokens.textSecondary,
-                        )
-                        TextButton(onClick = { requestDefaultRole() }) {
-                            Text(
-                                text = "Make default",
-                                style = ShellText.help.copy(fontFamily = LocalFont.current),
-                                color = tokens.accent,
-                            )
-                        }
-                    }
-                }
+                HavenBanner(
+                    icon = HavenIcon.Home,
+                    text = "HavenOS is not the default launcher.\nHome-button presses still open the old launcher.",
+                    actionLabel = "Make default",
+                    onAction = { requestDefaultRole() },
+                )
             }
             navPermissionMissing -> {
-                ShellCard {
-                    Column {
-                        Text(
-                            text = "Navigation gestures need accessibility access.",
-                            style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                            color = tokens.textPrimary,
-                        )
-                        TextButton(onClick = {
-                            try {
-                                context.startActivity(
-                                    Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)
-                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                                )
-                            } catch (t: Throwable) {
-                                // System screen unavailable; row state unchanged.
-                            }
-                        }) {
-                            Text(
-                                text = "Allow",
-                                style = ShellText.help.copy(fontFamily = LocalFont.current),
-                                color = tokens.accent,
+                HavenBanner(
+                    icon = HavenIcon.Accessibility,
+                    text = "Navigation gestures need accessibility access.",
+                    actionLabel = "Allow",
+                    onAction = {
+                        try {
+                            context.startActivity(
+                                Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                             )
+                        } catch (t: Throwable) {
+                            // System screen unavailable; row state unchanged.
                         }
-                    }
-                }
+                    },
+                )
+            }
+            gesturesPaused -> {
+                HavenBanner(
+                    icon = HavenIcon.Accessibility,
+                    text = "Gestures are paused.\nThe system stopped the gesture service. Reconnect it to restore edge swipes.",
+                    actionLabel = "Reconnect",
+                    onAction = {
+                        try {
+                            context.startActivity(
+                                Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        } catch (t: Throwable) {
+                            // System screen unavailable; row state unchanged.
+                        }
+                    },
+                )
             }
             backupFailed -> {
-                ShellCard {
-                    Column {
-                        Text(
-                            text = "The last backup import failed. Nothing changed.",
-                            style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                            color = tokens.textPrimary,
-                        )
-                        TextButton(onClick = {
-                            setBackupFailedFlag(context, false)
-                            openHub("device-data", "Device & Data")
-                        }) {
-                            Text(
-                                text = "View in Device & Data",
-                                style = ShellText.help.copy(fontFamily = LocalFont.current),
-                                color = tokens.accent,
-                            )
-                        }
+                HavenBanner(
+                    icon = HavenIcon.Info,
+                    text = "The last backup import failed. Nothing changed.",
+                    actionLabel = "View in Device & Data",
+                    onAction = {
+                        setBackupFailedFlag(context, false)
+                        openHub("device-data", "Device & Data")
+                    },
+                )
+            }
+        }
+
+        // Coordination fix §6: one Changes banner under the
+        // needs-attention banner. It carries the count (the footer
+        // count row below is deleted), Review, and Revert session.
+        if (session.changes.isNotEmpty()) {
+            GlassCard(level = GlassLevel.GLASS1, shape = HavenRadii.groupShape()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(HavenSpacing.s16),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${session.changes.size} changes",
+                        style = HavenType.rowLabel.copy(fontFamily = LocalFont.current),
+                        color = palette.onSurface,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { changesOpen = true }) { Text("Review") }
+                    TextButton(onClick = { scope.launch { session.revertSession() } }) {
+                        Text("Revert session")
                     }
                 }
             }
         }
 
-        // Look hero card: Minimal + accent swatch strip. No carousel:
-        // there are no presets to cycle through.
+        // Look hero: a live miniature of the current look, built from
+        // tokens only (accent, mode, material, icon shape, grid) — not
+        // a scaled-down copy of the real home. No carousel: there are
+        // no presets to cycle through.
         val modeName = when (state.darkMode) {
             1 -> "Light"
             2 -> "Dark"
@@ -456,48 +604,23 @@ fun HubScreen(
             1 -> "Translucent"
             else -> "Frosted"
         }
-        ShellCard(onClick = { openHub("look", "Look") }) {
-            Column {
-                Text(
-                    text = "Minimal",
-                    style = ShellText.title.copy(fontFamily = LocalFont.current),
-                    color = tokens.textPrimary,
-                )
-                Text(
-                    text = "$modeName · $materialName",
-                    style = ShellText.help.copy(fontFamily = LocalFont.current),
-                    color = tokens.textSecondary,
-                )
-                Spacer(Modifier.height(ShellSpacing.s12))
-                Row(horizontalArrangement = Arrangement.spacedBy(ShellSpacing.s8)) {
-                    for (dot in listOf(palette.accent, palette.surface, palette.onSurface)) {
-                        Box(
-                            Modifier.size(36.dp).clip(CircleShape)
-                                .background(dot),
-                        )
-                    }
-                }
-            }
-        }
+        MiniLookPreview(
+            modeName = modeName,
+            materialName = materialName,
+            gridText = if (state.colsPort < 0) "Follows density" else "${state.colsPort} × ${state.rowsPort}",
+            iconShapeExt = state.iconShapeExt,
+            onClick = { openHub("look", "Look") },
+        )
 
         // Quick tune: the controls people reach for most, writing the
         // same keys as their hubs (icon size, grid, mode, labels, dock
-        // position). The dock control is position only — the dock is
-        // always the floating pill, so there is no Attached/Floating
-        // switch to offer.
-        ShellSectionLabel(text = "Quick tune")
+        // position), as ONE grouped section. The dock control is
+        // position only — the dock is always the floating pill, so
+        // there is no Attached/Floating switch to offer. Mode lists
+        // System explicitly: HavenSegmented always shows a selection,
+        // so the old "no selection" state for System would lie.
         val isAutoIcon = state.iconSizeOverride < 0
         val shownIcon = if (isAutoIcon) state.iconDp().toFloat() else state.iconSizeOverride.toFloat()
-        ShellSliderRow(
-            title = "Icon size",
-            value = shownIcon,
-            range = 40f..68f,
-            valueText = { if (isAutoIcon) "Auto" else "${it.roundToInt()} dp" },
-            autoLabel = "Auto",
-            onAuto = { scope.launch { settings.setIconSizeOverride(-1) } },
-            onPreview = {},
-            onCommit = { scope.launch { settings.setIconSizeOverride(it.roundToInt().coerceIn(40, 68)) } },
-        )
         val gridPort = state.colsPort to state.rowsPort
         val gridSelected = when (gridPort) {
             -1 to -1 -> 0
@@ -505,65 +628,87 @@ fun HubScreen(
             5 to 6 -> 2
             else -> 3
         }
-        ShellRow(title = "Grid", value = if (gridPort.first < 0) "Follows density" else "${gridPort.first} × ${gridPort.second}") {
-            ShellSegmentedControl(
-                options = listOf("Density", "4 × 6", "5 × 6", "Custom"),
-                selected = gridSelected,
-                onSelect = { index ->
-                    when (index) {
-                        0 -> scope.launch {
-                            settings.clearGridOverride(false)
-                            settings.clearGridOverride(true)
-                        }
-                        // M10 (BUG-030): quick tune used to write the
-                        // PORTRAIT override only, so on a landscape
-                        // tablet tapping 4x6/5x6 changed nothing
-                        // visible. A quick-tune grid is global: it
-                        // writes both orientations (the per-orientation
-                        // picker in Home & Dock still splits them).
-                        1 -> scope.launch {
-                            settings.setGridOverride(false, 4, 6)
-                            settings.setGridOverride(true, 4, 6)
-                        }
-                        2 -> scope.launch {
-                            settings.setGridOverride(false, 5, 6)
-                            settings.setGridOverride(true, 5, 6)
-                        }
-                        else -> openHub("home-dock", "Home & Dock")
-                    }
+        GroupedSection(
+            label = "Quick tune",
+            rows = listOf(
+                {
+                    HavenSliderRow(
+                        label = "Icon size",
+                        value = shownIcon,
+                        valueRange = 40f..68f,
+                        valueText = { if (isAutoIcon) "Auto" else "${it.roundToInt()} dp" },
+                        onCommit = { scope.launch { settings.setIconSizeOverride(it.roundToInt().coerceIn(40, 68)) } },
+                        autoActive = isAutoIcon,
+                        onAutoClick = { scope.launch { settings.setIconSizeOverride(-1) } },
+                        autoLabel = "Auto",
+                    )
                 },
-            )
-        }
-        ShellRow(title = "Mode") {
-            ShellSegmentedControl(
-                options = listOf("Light", "Dark", "Auto"),
-                selected = when (state.darkMode) {
-                    1 -> 0
-                    2 -> 1
-                    3 -> 2
-                    else -> -1
+                {
+                    HavenSegmentedRow(
+                        label = "Grid",
+                        options = listOf("Density", "4 × 6", "5 × 6", "Custom"),
+                        selected = gridSelected,
+                        onSelect = { index ->
+                            when (index) {
+                                0 -> scope.launch {
+                                    settings.clearGridOverride(false)
+                                    settings.clearGridOverride(true)
+                                }
+                                // M10 (BUG-030): quick tune used to write the
+                                // PORTRAIT override only, so on a landscape
+                                // tablet tapping 4x6/5x6 changed nothing
+                                // visible. A quick-tune grid is global: it
+                                // writes both orientations (the per-orientation
+                                // picker in Home & Dock still splits them).
+                                1 -> scope.launch {
+                                    settings.setGridOverride(false, 4, 6)
+                                    settings.setGridOverride(true, 4, 6)
+                                }
+                                2 -> scope.launch {
+                                    settings.setGridOverride(false, 5, 6)
+                                    settings.setGridOverride(true, 5, 6)
+                                }
+                                else -> openHub("home-dock", "Home & Dock")
+                            }
+                        },
+                    )
                 },
-                onSelect = { index ->
-                    scope.launch { settings.setDarkMode(index + 1) }
+                {
+                    HavenSegmentedRow(
+                        label = "Mode",
+                        options = listOf("Light", "Dark", "Auto", "System"),
+                        selected = when (state.darkMode) {
+                            1 -> 0
+                            2 -> 1
+                            3 -> 2
+                            else -> 3
+                        },
+                        onSelect = { index ->
+                            scope.launch { settings.setDarkMode(if (index == 3) 0 else index + 1) }
+                        },
+                    )
                 },
-            )
-        }
-        ShellSwitchRow(
-            title = "Labels",
-            checked = state.labelsOn,
-            onCheckedChange = { on ->
-                scope.launch { settings.setLabels(on, state.labelSize) }
-            },
+                {
+                    HavenSwitchRow(
+                        label = "Labels",
+                        checked = state.labelsOn,
+                        onChange = { on ->
+                            scope.launch { settings.setLabels(on, state.labelSize) }
+                        },
+                    )
+                },
+                {
+                    HavenSegmentedRow(
+                        label = "Dock position",
+                        options = listOf("Bottom", "Left", "Right"),
+                        selected = state.dockPos.coerceIn(0, 2),
+                        onSelect = { index ->
+                            scope.launch { settings.setDockPos(index) }
+                        },
+                    )
+                },
+            ),
         )
-        ShellRow(title = "Dock position") {
-            ShellSegmentedControl(
-                options = listOf("Bottom", "Left", "Right"),
-                selected = state.dockPos.coerceIn(0, 2),
-                onSelect = { index ->
-                    scope.launch { settings.setDockPos(index) }
-                },
-            )
-        }
 
         // Recent hub chips, local only, up to 4.
         val recent by remember(recentVersion) { mutableStateOf(recentStore.recent()) }
@@ -582,9 +727,8 @@ fun HubScreen(
             )
         }
 
-        // Six hub rows: glyph tile tinted with the real glyph (never a
-        // letter tile), title + live one-line summary + chevron.
-        ShellSectionLabel(text = "All settings")
+        // Hub rows as ONE grouped section: icon tile, title + live
+        // one-line summary + chevron (HavenNavRow).
         val hiddenCount = remember(state.hiddenJson) { parseMembers(state.hiddenJson).size }
         val boundGestures = remember(state.gesturesJson) {
             parseGestures(state.gesturesJson).count { it.value != "none" }
@@ -601,66 +745,93 @@ fun HubScreen(
             "privacy" to "$hiddenCount hidden apps · layout ${if (state.lockLayout) "locked" else "unlocked"}",
             "device-data" to "$profileCount profiles · backup ${if (state.backupIncludeWp) "with" else "without"} wallpaper",
         )
-        for (hub in HUB_ROWS) {
-            ShellCard(onClick = {
-                onSpotlight(hub.route)
-                openHub(hub.route, hub.title)
-            }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(48.dp).clip(RoundedCornerShape(ShellRadii.chip))
-                            .background(tokens.accent.copy(alpha = 0.16f)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = hub.glyph,
-                            style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                            color = tokens.accent,
-                        )
-                    }
-                    Spacer(Modifier.size(ShellSpacing.s12))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            text = hub.title,
-                            style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                            color = tokens.textPrimary,
-                        )
-                        Text(
-                            text = summaries[hub.route] ?: "",
-                            style = ShellText.help.copy(fontFamily = LocalFont.current),
-                            color = tokens.textSecondary,
-                        )
-                    }
-                    Text(
-                        text = "›",
-                        style = ShellText.title.copy(fontFamily = LocalFont.current),
-                        color = tokens.textSecondary,
+        GroupedSection(
+            label = "All settings",
+            rows = HUB_ROWS.map { hub ->
+                {
+                    HavenNavRow(
+                        label = hub.title,
+                        value = summaries[hub.route] ?: "",
+                        icon = hub.icon,
+                        onClick = {
+                            onSpotlight(hub.route)
+                            openHub(hub.route, hub.title)
+                        },
                     )
                 }
-            }
-        }
+            },
+        )
 
-        // Footer: changed-this-session count opens the Changes list.
-        // (Panel title bar also shows the same count as a chip.)
-        ShellCard(onClick = { changesOpen = true }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "Changed this session (${session.changes.size})",
-                    style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                    color = tokens.textPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "›",
-                    style = ShellText.title.copy(fontFamily = LocalFont.current),
-                    color = tokens.textSecondary,
-                )
-            }
-        }
         Spacer(Modifier.height(ShellSpacing.s16))
     }
     if (changesOpen) {
         ChangesDialog(session = session, onDismiss = { changesOpen = false })
+    }
+}
+
+/**
+ * 3.1 Phase C: the hub-screen hero as a live miniature of the current
+ * look, built from tokens only — a mini grid in the current icon
+ * shape (one accent tile), a dock pill, and the mode/material/grid
+ * line. Never a scaled-down copy of the real home.
+ */
+@Composable
+private fun MiniLookPreview(
+    modeName: String,
+    materialName: String,
+    gridText: String,
+    iconShapeExt: Int,
+    onClick: () -> Unit,
+) {
+    val palette = LocalPalette.current
+    val roles = LocalAccentRoles.current
+    val tileShape = when (iconShapeExt) {
+        0 -> RoundedCornerShape(4.dp)
+        2 -> RoundedCornerShape(16.dp)
+        3 -> RoundedCornerShape(percent = 50)
+        4 -> RoundedCornerShape(topStart = 9.dp, topEnd = 2.dp, bottomEnd = 9.dp, bottomStart = 2.dp)
+        else -> RoundedCornerShape(12.dp)
+    }
+    GlassCard(
+        shape = HavenRadii.cardShape(),
+        modifier = Modifier.fillMaxWidth().clickable { onClick() },
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(HavenSpacing.s16),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(Modifier.size(18.dp).clip(tileShape).background(palette.onSurface.copy(alpha = 0.15f)))
+                    Box(Modifier.size(18.dp).clip(tileShape).background(Color(roles.accent)))
+                    Box(Modifier.size(18.dp).clip(tileShape).background(palette.onSurface.copy(alpha = 0.15f)))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(Modifier.size(18.dp).clip(tileShape).background(palette.onSurface.copy(alpha = 0.15f)))
+                    Box(Modifier.size(18.dp).clip(tileShape).background(palette.onSurface.copy(alpha = 0.15f)))
+                    Box(Modifier.size(18.dp).clip(tileShape).background(palette.onSurface.copy(alpha = 0.15f)))
+                }
+                Spacer(Modifier.height(4.dp))
+                Box(
+                    Modifier.size(62.dp, 12.dp).clip(RoundedCornerShape(percent = 50))
+                        .background(Color(roles.accentContainer)),
+                )
+            }
+            Spacer(Modifier.size(HavenSpacing.s16))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "Minimal",
+                    style = HavenType.title.copy(fontFamily = LocalFont.current),
+                    color = palette.onSurface,
+                )
+                Text(
+                    text = "$modeName · $materialName · $gridText",
+                    style = HavenType.caption.copy(fontFamily = LocalFont.current),
+                    color = palette.muted,
+                )
+            }
+            HavenIconTile(HavenIcon.HubLook, null)
+        }
     }
 }
 

@@ -17,12 +17,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSliderState
@@ -37,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalConfiguration
@@ -48,8 +48,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import app.havenos.launcher.theme.LocalFont
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenHelp
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
+import app.havenos.launcher.ui.glass.HavenSegmented
+import app.havenos.launcher.ui.glass.HavenSkeleton
+import app.havenos.launcher.ui.glass.HavenSwitch
 
 // ---------------------------------------------------------------------------
 // M6 shell components (v2 §6). Tonal cards, no outlines, no group boxes,
@@ -94,33 +100,13 @@ fun ShellCard(
     ) { content() }
 }
 
-/** Small popover for row help (Dialog styled as a card, not a full sheet). */
-@Composable
-private fun HelpPopover(help: String, onDismiss: () -> Unit) {
-    val tokens = LocalShellTokens.current
-    Dialog(onDismissRequest = onDismiss) {
-        Box(
-            Modifier
-                .fillMaxWidth(0.85f)
-                .clip(RoundedCornerShape(ShellRadii.chip))
-                .background(tokens.panelSurface)
-                .padding(ShellSpacing.s16),
-        ) {
-            Text(
-                text = help.take(90),
-                style = ShellText.help.copy(fontFamily = LocalFont.current),
-                color = tokens.textPrimary,
-            )
-        }
-    }
-}
-
 /**
  * One lean row: title + live value on the right, optional info button,
  * optional inline control below the header. [value] is display-only text
- * (callers keep it short, ~14 chars); it ellipsises, never wraps.
- * Disabled rows dim and carry a one-line reason under the title — the
- * only always-visible secondary line a row may have.
+ * (callers keep it short, ~14 chars). Titles wrap to two lines, never
+ * truncate at font scale 1.0 or 1.3 (3.1 Phase C). Disabled rows dim and
+ * carry a one-line reason under the title — the only always-visible
+ * secondary line a row may have.
  */
 @Composable
 fun ShellRow(
@@ -134,7 +120,6 @@ fun ShellRow(
     content: (@Composable () -> Unit)? = null,
 ) {
     val tokens = LocalShellTokens.current
-    var helpOpen by remember { mutableStateOf(false) }
     ShellCard(
         onClick = if (enabled) onClick else null,
         modifier = Modifier.alpha(if (enabled) 1f else 0.45f),
@@ -152,7 +137,7 @@ fun ShellRow(
                         text = title,
                         style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
                         color = tokens.textPrimary,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (!enabled && disabledReason != null) {
@@ -171,24 +156,12 @@ fun ShellRow(
                         text = value,
                         style = ShellText.value.copy(fontFamily = LocalFont.current),
                         color = tokens.textSecondary,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
                 if (help != null) {
-                    Box(
-                        Modifier
-                            .size(48.dp)
-                            .semantics { contentDescription = "Help for $title"; role = Role.Button }
-                            .clickable { helpOpen = true },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = "ⓘ",
-                            style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                            color = tokens.accent,
-                        )
-                    }
+                    HavenHelp(helpText = help)
                 }
                 if (trailing != null) {
                     Spacer(Modifier.width(ShellSpacing.s8))
@@ -201,12 +174,9 @@ fun ShellRow(
             }
         }
     }
-    if (helpOpen && help != null) {
-        HelpPopover(help = help, onDismiss = { helpOpen = false })
-    }
 }
 
-/** On/off row. The value text ("On"/"Off") states the state in words, never colour alone. */
+/** On/off row. The value text ("On"/"Off") states the state in words, never colour alone. [status] renders a muted second line (e.g. an API's Updated/Needs key/Off line). */
 @Composable
 fun ShellSwitchRow(
     title: String,
@@ -215,6 +185,7 @@ fun ShellSwitchRow(
     help: String? = null,
     enabled: Boolean = true,
     disabledReason: String? = null,
+    status: String? = null,
 ) {
     val tokens = LocalShellTokens.current
     ShellRow(
@@ -224,17 +195,22 @@ fun ShellSwitchRow(
         enabled = enabled,
         disabledReason = disabledReason,
         trailing = {
-            Switch(
+            HavenSwitch(
                 checked = checked,
-                onCheckedChange = if (enabled) onCheckedChange else null,
+                onChange = { if (enabled) onCheckedChange(it) },
                 enabled = enabled,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = tokens.accent,
-                    uncheckedThumbColor = tokens.textSecondary,
-                    uncheckedTrackColor = tokens.cardSurface,
-                ),
             )
+        },
+        content = if (status != null) {
+            {
+                Text(
+                    text = status,
+                    style = ShellText.help.copy(fontFamily = LocalFont.current),
+                    color = tokens.textSecondary,
+                )
+            }
+        } else {
+            null
         },
     )
 }
@@ -419,7 +395,7 @@ fun ShellSliderRow(
     }
 }
 
-/** Segmented control for 2–4 mutually exclusive options. Selected = accent tint, never an outline. */
+/** Segmented control for 2–4 mutually exclusive options: the shared HavenSegmented (sliding accent-soft thumb, each label drawn once). */
 @Composable
 fun ShellSegmentedControl(
     options: List<String>,
@@ -428,41 +404,13 @@ fun ShellSegmentedControl(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val tokens = LocalShellTokens.current
-    Row(
-        modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(ShellSpacing.s8),
-    ) {
-        options.forEachIndexed { i, label ->
-            val sel = i == selected
-            Box(
-                Modifier
-                    .weight(1f)
-                    .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(ShellRadii.chip))
-                    .background(if (sel) tokens.cardSelected else tokens.cardSurface)
-                    .alpha(if (enabled) 1f else 0.45f)
-                    .semantics {
-                        contentDescription = "$label, ${if (sel) "selected" else "not selected"}"
-                        role = Role.Button
-                    }
-                    .clickable(enabled = enabled) { onSelect(i) }
-                    .padding(vertical = 8.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = label,
-                    style = ShellText.help.copy(
-                        fontFamily = LocalFont.current,
-                        fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
-                    ),
-                    color = if (sel) tokens.accent else tokens.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
+    HavenSegmented(
+        options = options,
+        selected = selected,
+        onSelect = onSelect,
+        enabled = enabled,
+        modifier = modifier.fillMaxWidth(),
+    )
 }
 
 /** Swatch row: 48dp targets, 36dp colour dots, a 2dp accent ring on the selected one. */
@@ -526,53 +474,46 @@ fun ShellColorPickerDialog(
     val hex = text.trim().removePrefix("#")
     val parsed = hex.toLongOrNull(16)
     val valid = hex.length == 6 && parsed != null
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "Custom colour",
-                style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                color = tokens.textPrimary,
-            )
-        },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    label = { Text(text = "#RRGGBB") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (!valid && hex.isNotEmpty()) {
-                    Spacer(Modifier.height(ShellSpacing.s8))
-                    Text(
-                        text = "Enter 6 hex digits, e.g. #2F6FCE.",
-                        style = ShellText.help.copy(fontFamily = LocalFont.current),
-                        color = tokens.danger,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = valid,
-                onClick = { if (valid) onPick((0xFF000000L or (parsed ?: 0L)).toInt()) },
-            ) {
-                Text(
-                    text = "Use colour",
-                    style = ShellText.help.copy(fontFamily = LocalFont.current),
-                    color = tokens.accent,
-                )
-            }
-        },
-        dismissButton = {
+    HavenGlassDialog(
+        onDismiss = onDismiss,
+        title = "Custom colour",
+        buttons = {
             TextButton(onClick = onDismiss) {
                 Text(
                     text = "Cancel",
                     style = ShellText.help.copy(fontFamily = LocalFont.current),
                     color = tokens.textSecondary,
+                )
+            }
+            Button(
+                enabled = valid,
+                onClick = { if (valid) onPick((0xFF000000L or (parsed ?: 0L)).toInt()) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = tokens.accent,
+                    contentColor = tokens.textPrimary,
+                ),
+            ) {
+                Text(
+                    text = "Use colour",
+                    style = ShellText.help.copy(fontFamily = LocalFont.current),
+                )
+            }
+        },
+        content = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text(text = "#RRGGBB") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (!valid && hex.isNotEmpty()) {
+                Spacer(Modifier.height(ShellSpacing.s8))
+                Text(
+                    text = "Enter 6 hex digits, e.g. #2F6FCE.",
+                    style = ShellText.help.copy(fontFamily = LocalFont.current),
+                    color = tokens.danger,
                 )
             }
         },
@@ -619,10 +560,12 @@ private fun ShellExpander(
                 color = tokens.accent,
                 modifier = Modifier.weight(1f),
             )
-            Text(
-                text = if (open) "⌄" else "›",
-                style = ShellText.rowTitle.copy(fontFamily = LocalFont.current),
-                color = tokens.textSecondary,
+            HavenIconImage(
+                HavenIcon.ChevronRight,
+                null,
+                tint = tokens.textSecondary,
+                size = 20.dp,
+                modifier = Modifier.graphicsLayer { rotationZ = if (open) 90f else 0f },
             )
         }
         if (open) content()
@@ -643,13 +586,11 @@ fun ShellSectionLabel(text: String) {
 /** Loading state for a screen: skeleton rows, no fake content. */
 @Composable
 fun ShellSkeletonRow() {
-    val tokens = LocalShellTokens.current
-    Box(
+    HavenSkeleton(
         Modifier
             .fillMaxWidth()
             .height(shellRowHeight())
-            .clip(RoundedCornerShape(ShellRadii.card))
-            .background(tokens.cardSurface.copy(alpha = 0.6f)),
+            .clip(RoundedCornerShape(ShellRadii.card)),
     )
 }
 

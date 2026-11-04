@@ -15,8 +15,25 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.text.format.DateFormat
 import android.view.WindowManager
+import app.havenos.launcher.data.SnapshotPreview
 import app.havenos.launcher.data.SnapshotRecord
+import app.havenos.launcher.data.firstPagePreviewItems
+import app.havenos.launcher.data.showRestoreThumbnail
+import app.havenos.launcher.ui.glass.GlassLevel
+import app.havenos.launcher.ui.glass.HavenDialog
+import app.havenos.launcher.ui.glass.HavenDialogFilledButton
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
+import app.havenos.launcher.ui.glass.HavenMenuRow
+import app.havenos.launcher.ui.glass.glass
+import app.havenos.launcher.ui.glass.accentSelectionOf
+import app.havenos.launcher.ui.glass.vector
+import app.havenos.launcher.ui.island.IslandHomeOverlay
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -60,11 +77,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
@@ -72,6 +90,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -81,6 +100,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
@@ -93,6 +113,8 @@ import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -132,6 +154,12 @@ import app.havenos.launcher.data.encodeSchedule
 import app.havenos.launcher.data.parseProfiles
 import app.havenos.launcher.data.resolveDockFromIntents
 import app.havenos.launcher.data.switchProfile
+import app.havenos.launcher.data.WindowClass
+import app.havenos.launcher.data.AssistFeatureId
+import app.havenos.launcher.data.windowClassFor
+import app.havenos.launcher.ui.assist.AssistAction
+import app.havenos.launcher.ui.assist.applyAssistSettingAction
+import app.havenos.launcher.ui.mascot.MascotLayer
 import app.havenos.launcher.ui.settings.shell.HubNavigator
 import app.havenos.launcher.ui.settings.shell.LocalDraftLayer
 import app.havenos.launcher.ui.settings.shell.TextFieldDialog
@@ -245,6 +273,50 @@ private fun settingsRouteForDrawerSection(name: String): String = when (name) {
     else -> "home"
 }
 
+/**
+ * 3.1 A3: host-provided Settings opener for surfaces composed under
+ * home (Today cards). Null outside the home host. The second param
+ * is an optional deep-link field key (see PanelDeepLink in the
+ * settings shell).
+ */
+val LocalOpenSettingsPanel = staticCompositionLocalOf<((String, String?) -> Unit)?> { null }
+
+/**
+ * 3.1 A10: the home long-press (quick customize) menu. Each item
+ * opens exactly one destination; "Style" was renamed "Look" because
+ * it opens the Look hub. The host maps each destination to its
+ * action at the quick-customize bar; this table is the test
+ * contract (event flow 13).
+ */
+enum class QuickMenuDestination {
+    /** Look hub, scrolled to the Wallpaper section. */
+    WALLPAPER,
+    /** Home & Dock hub, scrolled to the Grid section. */
+    GRID,
+    /** The add-widget sheet. */
+    WIDGET_SHEET,
+    /** Home & Dock hub, scrolled to the Dock section. */
+    DOCK,
+    /** The Look hub. */
+    LOOK,
+    /** The Home & Dock hub. */
+    HOME_DOCK,
+    /** Enter edit mode. */
+    EDIT_HOME,
+}
+
+data class QuickMenuItem(val label: String, val destination: QuickMenuDestination)
+
+fun quickCustomizeMenu(): List<QuickMenuItem> = listOf(
+    QuickMenuItem("Wallpaper", QuickMenuDestination.WALLPAPER),
+    QuickMenuItem("Layout", QuickMenuDestination.GRID),
+    QuickMenuItem("Widgets", QuickMenuDestination.WIDGET_SHEET),
+    QuickMenuItem("Dock", QuickMenuDestination.DOCK),
+    QuickMenuItem("Look", QuickMenuDestination.LOOK),
+    QuickMenuItem("Home settings", QuickMenuDestination.HOME_DOCK),
+    QuickMenuItem("Edit home", QuickMenuDestination.EDIT_HOME),
+)
+
 @Composable
 fun HavenRoot(
     app: HavenApp,
@@ -257,11 +329,16 @@ fun HavenRoot(
     var showSettingsPanel by remember { mutableStateOf(false) }
     var panelStartRoute by remember { mutableStateOf("home") }
     var panelEpoch by remember { mutableIntStateOf(0) }
+    // 3.1 A3/A10: deep-link field armed for the next panel open, or null.
+    var panelDeepLinkField by remember { mutableStateOf<String?>(null) }
     val panelSession = rememberPreviewSession()
     val panelDraft = rememberDraftLayer()
     val panelSpotlight = rememberSpotlightState()
     val hubNavigator = remember { HubNavigator() }
     val liveState by app.settings.state.collectAsState()
+    // 3.1.1 (item 3): Safe Mode gates the mascot and island at the
+    // host (blur is forced off in MainActivity's theme state).
+    val safeMode by app.safeMode.collectAsState()
     // What home renders: the panel-open snapshot while Before is held,
     // the preview draft while a grid/wallpaper preview is active, else
     // the live state. Writes still go to the store, never to these.
@@ -270,8 +347,9 @@ fun HavenRoot(
         panelDraft.hasDraft -> panelDraft.draft!!
         else -> liveState
     }
-    fun openSettingsPanel(route: String) {
+    fun openSettingsPanel(route: String, deepLinkField: String? = null) {
         panelStartRoute = route
+        panelDeepLinkField = deepLinkField
         panelEpoch++
         showSettingsPanel = true
     }
@@ -380,6 +458,10 @@ fun HavenRoot(
     // Worker A); the editor block further down and the toolbar Calm
     // button both set it. Do not redeclare it here.
     var pendingLibraryView by remember { mutableStateOf<LibraryView?>(null) }
+    // 3.1 Phase F (F3): setting actions from a drawer command, parked
+    // until the panel-open effect applies them AFTER begin() — a list,
+    // because one compound can hold two setting actions.
+    var pendingAssistActions by remember { mutableStateOf<List<AssistAction>>(emptyList()) }
     var dockMenuEntry by remember { mutableStateOf<AppEntry?>(null) }
     var dockLabelEntry by remember { mutableStateOf<AppEntry?>(null) }
     var dockIconEntry by remember { mutableStateOf<AppEntry?>(null) }
@@ -453,15 +535,14 @@ fun HavenRoot(
     var toastText by remember { mutableStateOf<String?>(null) }
     var resizeItemId by remember { mutableStateOf<String?>(null) }
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    // M9: ONE 50-level undo/redo stack (Doc 1 §3.7), shared by edit mode
-    // and every host mutation below. The Settings panel keeps its
-    // existing Before/Changes path for settings values; this stack is
-    // the shared undo currency for layout (see the M9 report note on
-    // why settings values are not also snapshotted here).
-    val editUndo = remember { EditUndoStack() }
-
+    // M9 + coordination fix §5: ONE 50-level undo/redo stack, now
+    // durable (Room undo_entries) via the coordinator. pushUndo
+    // captures the pre-change layout synchronously (the coordinator
+    // fills dock/hidden/Today/recents); undo/redo apply through the
+    // coordinator and land via the Room observers below. The Settings
+    // panel keeps its existing Before/Changes path for settings values.
     fun pushUndo() {
-        editUndo.push(snapshotJson(items, folders))
+        app.layoutStore.pushUndoSnapshot(items, folders)
     }
 
     fun restoreSnapshot(snap: String) {
@@ -474,13 +555,15 @@ fun HavenRoot(
     }
 
     fun doUndo() {
-        val snap = editUndo.undo(snapshotJson(items, folders)) ?: return
-        restoreSnapshot(snap)
+        scope.launch {
+            if (app.layoutStore.undo()) selectedIds = emptySet()
+        }
     }
 
     fun doRedo() {
-        val snap = editUndo.redo(snapshotJson(items, folders)) ?: return
-        restoreSnapshot(snap)
+        scope.launch {
+            if (app.layoutStore.redo()) selectedIds = emptySet()
+        }
     }
 
     // M9 edit-session state: snapshot at entry (overflow "Revert
@@ -492,6 +575,19 @@ fun HavenRoot(
     var undoSnackbarAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var currentGridPage by remember { mutableStateOf(0) }
     var focusGridPage by remember { mutableStateOf<Int?>(null) }
+    // v3 Track A (Mascot): cell window rects exported by PagedHome, so
+    // Find guidance can walk adjacent to a real icon and ring it.
+    // Snapshot state map: the layer recomposes when a rect lands.
+    val mascotCellRects = remember { mutableStateMapOf<String, Rect>() }
+    // 3.1 Phase E: Settings-pointing keeps the layer composed while
+    // Find points at a Settings row (the ONE exception to the hide
+    // rule). Poof handoff: when the gate closes while the layer is
+    // visible, it stays composed with hideRequested until the poof
+    // finishes, then unmounts. Rail rect feeds the ledge graph.
+    var mascotSettingsPointing by remember { mutableStateOf(false) }
+    var mascotPoofing by remember { mutableStateOf(false) }
+    var mascotWasVisible by remember { mutableStateOf(false) }
+    var mascotRailRect by remember { mutableStateOf<Rect?>(null) }
     var dockDropHover by remember { mutableStateOf(false) }
     var selectMoreArmed by remember { mutableStateOf(false) }
     var showCalmEditor by remember { mutableStateOf(false) }
@@ -535,6 +631,16 @@ fun HavenRoot(
         if (toastText != null) {
             delay(2000)
             toastText = null
+        }
+    }
+    // Coordination fix §2: a rejected commit carries its toast here —
+    // without this, a locked-layout grid/dock/Today change would fail
+    // silently from the Settings panel.
+    val rejectionToast by app.layoutStore.rejectionToast.collectAsState()
+    LaunchedEffect(rejectionToast) {
+        if (rejectionToast != null) {
+            toastText = rejectionToast
+            app.layoutStore.clearRejectionToast()
         }
     }
     LaunchedEffect(quickPanelSignal) {
@@ -804,20 +910,37 @@ fun HavenRoot(
     // start route); re-targeting on open resets its stack in the open
     // effect below, so a stale stack never survives a reopen.
     val panelRegistry = remember(hubNavigator) {
-        createHubRegistry(app, panelSession, hubNavigator) { action ->
-            performGestureAction(action)
-        }
+        createHubRegistry(
+            app, panelSession, hubNavigator,
+            onTestAction = { action -> performGestureAction(action) },
+            onEnterCalm = enterCalm,
+        )
     }
     val panelState = rememberSettingsPanelState(panelRegistry, "home", panelSession)
     LaunchedEffect(panelState) { hubNavigator.push = { route -> panelState.push(route) } }
     // Opening (or re-targeting) the panel: fresh snapshot, no stale
-    // draft, stack reset to the requested route.
+    // draft, stack reset to the requested route, deep link armed.
     LaunchedEffect(showSettingsPanel, panelEpoch) {
         if (showSettingsPanel) {
             panelSession.begin(liveState)
+            // 3.1 Phase F (F3): drawer commands park their setting
+            // actions here so they apply AFTER the snapshot — Changes
+            // then shows them with readable names and Revert, and the
+            // Before pill shows the pre-change home.
+            val pending = pendingAssistActions
+            if (pending.isNotEmpty()) {
+                pendingAssistActions = emptyList()
+                for (action in pending) applyAssistSettingAction(app.settings, action)
+                app.settings.recordAssistUse(
+                    AssistFeatureId.SEARCH_COMMANDS, System.currentTimeMillis(),
+                )
+            }
             panelDraft.discard()
             panelState.toRoot()
             if (panelStartRoute != "home") panelState.push(panelStartRoute)
+            val field = panelDeepLinkField
+            if (field != null) panelState.deepLinkTo(panelStartRoute, field)
+            else panelState.clearDeepLink()
         }
     }
     // Session diff: rebuild the Changes list from the panel-open
@@ -1008,6 +1131,21 @@ fun HavenRoot(
     // page. Read in composition (currentPage is snapshot state), so
     // host rows recompose on page change.
     val hostCurrentGridPage = gridPageForTodayPager(pagerStateHost.currentPage, visibleGridPagesHost, todayForPager)
+    // Coordination fix §1: switch-time dirty repair. When the window
+    // class changes to a profile a grid commit marked dirty, reflow
+    // that profile under its grid before first frame; valid items keep
+    // exact positions, the flag clears, and no undo entry is made.
+    // No-op when the profile is clean (the common case).
+    val windowClassNow = windowClassFor(configuration.screenWidthDp, landscape)
+    LaunchedEffect(windowClassNow) {
+        val grid = when (windowClassNow) {
+            WindowClass.EXPANDED_LANDSCAPE -> liveState.gridCells(true)
+            else -> liveState.gridCells(false)
+        }
+        app.layoutStore.repairDirtyProfile(
+            windowClassNow, grid.first, grid.second, visibleGridPagesHost,
+        )
+    }
     val labelForItem: (HomeItem) -> String = { item ->
         if (item.kind == ItemKind.APP) appsByKey[item.payload]?.label ?: defaultItemLabel(item)
         else defaultItemLabel(item)
@@ -1114,7 +1252,7 @@ fun HavenRoot(
     }
 
     // ---- M9 edit-mode host mutations (Doc 1 §3.5, §3.6, §3.11) ----
-    // All are lock-guarded and undoable via the shared editUndo stack.
+    // All are lock-guarded and undoable via the shared durable undo stack.
 
     /** Dock capacity, via the dock component's own math (Dock.kt). */
     fun dockWouldOverflow(newPinnedCount: Int): Boolean {
@@ -1229,12 +1367,9 @@ fun HavenRoot(
         }
         selectedIds = emptySet()
         // Undo must restore BOTH the layout snapshot and the hidden list;
-        // the generic doUndo restores layout only, so Hide carries its own.
-        showUndoSnackbar("Hidden") {
-            val snap = editUndo.undo(snapshotJson(items, folders))
-            if (snap != null) restoreSnapshot(snap)
-            scope.launch { app.settings.setHiddenJson(encodeMembers(oldHidden)) }
-        }
+        // coordination fix §5 frames carry the full state, so the
+        // generic doUndo restores the hidden list too.
+        showUndoSnackbar("Hidden") { doUndo() }
     }
 
     /** Duplicate a single built-in widget onto the first free spot. */
@@ -1427,7 +1562,10 @@ fun HavenRoot(
         }
     }
 
-    CompositionLocalProvider(LocalGlass provides glassState) {
+    CompositionLocalProvider(
+        LocalGlass provides glassState,
+        LocalOpenSettingsPanel provides { route, field -> openSettingsPanel(route, field) },
+    ) {
     Box(Modifier.fillMaxSize()) {
         WallpaperLayer(app, state)
 
@@ -1614,6 +1752,9 @@ fun HavenRoot(
                     },
                     // M8 pager params, wired to the M8 settings keys.
                     todayOn = todayForPager,
+                    // 3.1 A5: glance rule uses the raw toggle — the
+                    // rail and the strip both count as Today visible.
+                    todayVisible = todayOn,
                     parallaxOn = state.parallaxOn,
                     indicatorOn = state.pageIndicatorOn,
                     hiddenPages = hiddenPages,
@@ -1667,6 +1808,8 @@ fun HavenRoot(
                     onExitEdit = { exitEditOrClearSelection() },
                     hostPagerState = pagerStateHost,
                     indicatorHosted = true,
+                    // v3 Track A: export cell rects for mascot guidance.
+                    cellRectsOut = mascotCellRects,
                 )
             } // Column: PagedHome (no vertical scroll surface remains)
             }
@@ -1885,11 +2028,21 @@ fun HavenRoot(
             // reserved space at the top of this column — the grid
             // below is pushed down (and scaled by editScale), never
             // overlapped, unlike the old overlay toolbar it replaces.
-            if (editMode) {
+            // Coordination fix §6: never composed under the panel
+            // (panel open exits edit mode first; this gate covers the
+            // same frame).
+            val undoDepth by app.layoutStore.undoDepth.collectAsState()
+            val redoDepth by app.layoutStore.redoDepth.collectAsState()
+            // 3.1 A9: toolbar Undo/Redo name what they will undo.
+            val undoLabel by app.layoutStore.undoLabel.collectAsState()
+            val redoLabel by app.layoutStore.redoLabel.collectAsState()
+            if (editMode && !showSettingsPanel) {
                 EditToolbar(
                     expanded = sizeClass == HomeSizeClass.Expanded,
-                    canUndo = editUndo.canUndo,
-                    canRedo = editUndo.canRedo,
+                    canUndo = undoDepth > 0,
+                    canRedo = redoDepth > 0,
+                    undoLabel = undoLabel?.let { "Undo $it" } ?: "Undo",
+                    redoLabel = redoLabel?.let { "Redo $it" } ?: "Redo",
                     snapOn = state.snapToGrid,
                     onUndo = { doUndo() },
                     onRedo = { doRedo() },
@@ -2084,8 +2237,16 @@ fun HavenRoot(
                         onSearch = { showSearchCard = true },
                         onAddWidget = { showWidgetSheet = true },
                         onEnterCalm = enterCalm,
-                        modifier = Modifier.weight(0.30f).fillMaxHeight(),
+                        modifier = Modifier.weight(0.30f).fillMaxHeight()
+                            .onGloballyPositioned { coords ->
+                                mascotRailRect = coords.boundsInWindow()
+                            },
                         settings = state,
+                        // 3.1 A6: last card scrolls fully clear of a
+                        // bottom dock (dock height + 16dp); side
+                        // docks sit outside the rail column.
+                        bottomInset = if (dockSide == DockSide.Bottom)
+                            dockThicknessFor(sizeClass, DockSide.Bottom) + 16.dp else 0.dp,
                     )
                     Column(Modifier.weight(0.70f).fillMaxHeight()) {
                         EditToolbarBlock()
@@ -2191,6 +2352,63 @@ fun HavenRoot(
                     if (dockSide == DockSide.Right) DockHost()
                 }
             }
+            // v3 Track A (Mascot): home-only layer, drawn above home
+            // content and below the Settings panel / Calm overlays
+            // (those are composed after this Box). Gated to calm home
+            // only — any overlay, edit mode, folder, drawer, or widget
+            // sheet hides it (yield rules, prompt §4.2), EXCEPT Find
+            // pointing at a Settings row (Phase E). Defaults OFF
+            // and a dismiss sticks, so this is inert until opted in.
+            // Poof handoff: gate closing while visible keeps the
+            // layer composed until the poof finishes, then unmounts.
+            // 3.1.1 (item 2): a failed mascot is cut for the session
+            // (poof-out via the existing gate-close path, then unmount).
+            val mascotGate = (state.mascotOn && !state.mascotDismissed &&
+                !FeatureSessionState.isDisabled(FeatureId.MASCOT) && !safeMode && !editMode &&
+                openFolderId == null && !drawerOpen && !showSettingsPanel &&
+                !calmOpen && !showWidgetSheet && !showSearchCard &&
+                !quickPanelOpen && !showQuickCustomize) || mascotSettingsPointing
+            LaunchedEffect(mascotGate) {
+                if (mascotGate) {
+                    mascotWasVisible = true
+                    mascotPoofing = false
+                } else if (mascotWasVisible) {
+                    mascotPoofing = true
+                }
+            }
+            if (mascotGate || mascotPoofing) {
+                MascotLayer(
+                    settings = app.settings,
+                    state = state,
+                    apps = appsByKey.values.toList(),
+                    stats = stats,
+                    homeItems = items,
+                    foldersMap = foldersMap,
+                    dockKeys = state.dock,
+                    currentGridPage = hostCurrentGridPage,
+                    cellRects = mascotCellRects,
+                    dockSide = dockSide,
+                    dockThicknessDp = dockThicknessFor(sizeClass, dockSide),
+                    railRect = mascotRailRect,
+                    hideRequested = mascotPoofing && !mascotGate,
+                    onHideComplete = {
+                        mascotPoofing = false
+                        mascotWasVisible = false
+                    },
+                    onSettingsPointingChange = { mascotSettingsPointing = it },
+                    onNavigateToPage = { focusGridPage = it },
+                    onOpenDrawer = { drawerOpen = true },
+                    onLaunch = { entry -> launchEntry(entry) },
+                    onOpenSettings = { route, field -> openSettingsPanel(route, field) },
+                    onEnterEditMode = { enterEditMode() },
+                    onOpenWidgetSheet = { showWidgetSheet = true },
+                    onAddToDock = { entry -> addEntryToHome(entry) },
+                )
+            }
+            // 3.1.1 (item 3): Safe Mode banner — above home content
+            // (pager, dock, mascot), below the drawer and Settings
+            // overlays, which are composed after this shell Box.
+            SafeModeBanner(app = app)
         }
 
     LaunchedEffect(showLockedToast) {
@@ -2409,18 +2627,12 @@ fun HavenRoot(
         }
 
         if (deleteRefusedLabels != null) {
-            AlertDialog(
-                onDismissRequest = { deleteRefusedLabels = null },
-                title = { Text("Cannot delete this page") },
-                text = {
-                    Text(
-                        "These items do not fit on any other page: " +
-                            deleteRefusedLabels!!.joinToString(", "),
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = { deleteRefusedLabels = null }) { Text("OK") }
-                },
+            HavenDialog(
+                onDismiss = { deleteRefusedLabels = null },
+                title = "Cannot delete this page",
+                body = "These items do not fit on any other page: " +
+                    deleteRefusedLabels!!.joinToString(", "),
+                dismissLabel = "OK",
             )
         }
 
@@ -2428,67 +2640,70 @@ fun HavenRoot(
         // move-to-page picker, restore-layout confirm, reset-page
         // confirm, Calm editor, and the 5s undo snackbar (above the toast).
         if (showRemoveConfirm) {
-            AlertDialog(
-                onDismissRequest = { showRemoveConfirm = false },
-                title = { Text("Remove from home") },
-                text = {
-                    Text(
-                        "Remove ${selectedIds.size} item(s) from home? " +
-                            "The apps stay in the Library.",
-                    )
+            HavenDialog(
+                onDismiss = { showRemoveConfirm = false },
+                title = "Remove from home",
+                body = "Remove ${selectedIds.size} item(s) from home? " +
+                    "The apps stay in the Library.",
+                dismissLabel = "Cancel",
+                confirmLabel = "Remove",
+                onConfirm = {
+                    showRemoveConfirm = false
+                    removeSelected()
                 },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showRemoveConfirm = false
-                        removeSelected()
-                    }) { Text("Remove") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showRemoveConfirm = false }) { Text("Cancel") }
-                },
+                danger = true,
             )
         }
 
         val moveIds = moveToPageItemIds
         if (moveIds != null) {
-            AlertDialog(
-                onDismissRequest = { moveToPageItemIds = null },
-                title = { Text("Move to page") },
-                text = {
-                    Column {
-                        for (pg in overviewPages) {
-                            TextButton(onClick = {
-                                moveToPageItemIds = null
-                                moveItemsToPage(moveIds, pg.page)
-                            }) {
-                                Text(
-                                    "Page ${pg.page + 1}" +
-                                        (if (pg.isDefault) " (default)" else "") +
-                                        (if (pg.hidden) " (hidden)" else ""),
-                                )
-                            }
+            HavenGlassDialog(
+                onDismiss = { moveToPageItemIds = null },
+                title = "Move to page",
+                buttons = {
+                    TextButton(onClick = { moveToPageItemIds = null }) { Text("Cancel") }
+                },
+                content = {
+                    for (pg in overviewPages) {
+                        TextButton(onClick = {
+                            moveToPageItemIds = null
+                            moveItemsToPage(moveIds, pg.page)
+                        }) {
+                            Text(
+                                "Page ${pg.page + 1}" +
+                                    (if (pg.isDefault) " (default)" else "") +
+                                    (if (pg.hidden) " (hidden)" else ""),
+                            )
                         }
                     }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = { moveToPageItemIds = null }) { Text("Cancel") }
                 },
             )
         }
 
         if (showRestoreLayout) {
-            // M9 integration: list Worker D's auto-snapshots (date + page /
-            // item / folder counts) instead of restoring a single stale blob.
-            // Visual home preview before applying is still open (see report).
+            // Coordination fix §6: each row renders a first-page
+            // thumbnail (the existing page-overview renderer) above
+            // the counts line; zero renderable items fall back to the
+            // counts-only row. The thumbnail is render-only; Apply
+            // runs the existing atomic restore (which clears both
+            // undo stacks per §3, so there is no pre-restore push —
+            // it would be cleared, and its async Room persist could
+            // resurrect a stale row after the clear).
             var restoreList by remember { mutableStateOf<List<SnapshotRecord>?>(null) }
+            var restorePreviews by remember { mutableStateOf<Map<Long, SnapshotPreview>?>(null) }
             LaunchedEffect(Unit) {
-                restoreList = app.layoutStore.snapshots()
+                val records = app.layoutStore.snapshots()
+                val previews = app.layoutStore.snapshotPreviews().associateBy { it.id }
+                restoreList = records
+                restorePreviews = previews
             }
-            AlertDialog(
-                onDismissRequest = { showRestoreLayout = false },
-                title = { Text("Restore layout") },
-                text = {
+            HavenGlassDialog(
+                onDismiss = { showRestoreLayout = false },
+                title = "Restore layout",
+                buttons = {
+                    TextButton(onClick = { showRestoreLayout = false }) { Text("Cancel") }
+                },
+                content = {
                     val list = restoreList
                     if (list == null) {
                         Text("Loading snapshots…")
@@ -2506,23 +2721,61 @@ fun HavenRoot(
                                         Locale.getDefault(),
                                     ).format(Date(rec.createdAtMs))
                                 }
+                                // Geometry comes from parsing the record
+                                // (ids carry no coordinates); labels
+                                // resolve against the live catalog, with
+                                // the existing fallback for unknown ids.
+                                val (firstPageItems, snapshotFolders) = remember(rec) {
+                                    val (parsedItems, parsedFolders) = parseSnapshot(rec.layoutJson)
+                                    firstPagePreviewItems(parsedItems) to
+                                        parsedFolders.associateBy { it.id }
+                                }
+                                val preview = restorePreviews?.get(rec.id)
+                                val showThumb = preview != null &&
+                                    showRestoreThumbnail(preview, firstPageItems)
+                                // Tile taps consume the press inside
+                                // PageThumbnail, so Apply is wired to
+                                // both the row and the tile tap.
+                                val applySnapshot = {
+                                    showRestoreLayout = false
+                                    scope.launch {
+                                        if (app.layoutStore.restoreSnapshot(rec)) {
+                                            toastText = "Layout restored"
+                                        } else {
+                                            toastText =
+                                                "Couldn't restore that snapshot"
+                                        }
+                                    }
+                                }
                                 Column(
                                     Modifier.fillMaxWidth()
-                                        .clickable {
-                                            showRestoreLayout = false
-                                            pushUndo()
-                                            scope.launch {
-                                                if (app.layoutStore.restoreSnapshot(rec)) {
-                                                    toastText = "Layout restored"
-                                                } else {
-                                                    toastText =
-                                                        "Couldn't restore that snapshot"
-                                                }
-                                            }
-                                        }
+                                        .clickable { applySnapshot() }
                                         .padding(vertical = 8.dp),
                                 ) {
                                     Text(date)
+                                    if (showThumb) {
+                                        PageThumbnail(
+                                            page = OverviewPage(page = 0, items = firstPageItems),
+                                            colsU = colsU,
+                                            rowsU = rowsU,
+                                            labelFor = { item ->
+                                                if (item.kind == ItemKind.FOLDER) {
+                                                    snapshotFolders[item.id]?.name ?: "Folder"
+                                                } else {
+                                                    labelForItem(item)
+                                                }
+                                            },
+                                            highlighted = false,
+                                            selectedIconId = null,
+                                            draggedId = null,
+                                            iconBounds = remember { mutableMapOf() },
+                                            onIconTap = { applySnapshot() },
+                                            onDragStart = { _, _ -> },
+                                            onDragMove = {},
+                                            onDragEnd = {},
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                    }
                                     Text(
                                         "${rec.pageCount} pages · " +
                                             "${rec.itemCount} items · " +
@@ -2533,41 +2786,31 @@ fun HavenRoot(
                         }
                     }
                 },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = { showRestoreLayout = false }) { Text("Cancel") }
-                },
             )
         }
 
         if (showResetPage) {
-            AlertDialog(
-                onDismissRequest = { showResetPage = false },
-                title = { Text("Reset page") },
-                text = {
-                    Text(
-                        "Remove all items from page ${currentGridPage + 1}? " +
-                            "This is undoable.",
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showResetPage = false
-                        if (requireUnlocked()) {
-                            pushUndo()
-                            scope.launch {
-                                app.db.homeItems().replaceAll(
-                                    items.filterNot { it.page == currentGridPage },
-                                )
-                            }
-                            selectedIds = emptySet()
-                            toastText = "Page reset"
+            HavenDialog(
+                onDismiss = { showResetPage = false },
+                title = "Reset page",
+                body = "Remove all items from page ${currentGridPage + 1}? " +
+                    "This is undoable.",
+                dismissLabel = "Cancel",
+                confirmLabel = "Reset",
+                onConfirm = {
+                    showResetPage = false
+                    if (requireUnlocked()) {
+                        pushUndo()
+                        scope.launch {
+                            app.db.homeItems().replaceAll(
+                                items.filterNot { it.page == currentGridPage },
+                            )
                         }
-                    }) { Text("Reset") }
+                        selectedIds = emptySet()
+                        toastText = "Page reset"
+                    }
                 },
-                dismissButton = {
-                    TextButton(onClick = { showResetPage = false }) { Text("Cancel") }
-                },
+                danger = true,
             )
         }
 
@@ -2592,6 +2835,25 @@ fun HavenRoot(
             }
         }
 
+        // v3 Track B Dynamic Island: one overlay block, placed BEFORE
+        // the drawer/search/settings overlays below so those cover it
+        // when open. It renders nothing when the toggle is off, in
+        // edit mode, or when no live activity exists — so the off /
+        // idle states cannot disturb the grid, dock, or toolbar.
+        // Labels come from the live catalog; tapping a notification
+        // row launches that app via the host's own launcher.
+        // 3.1.1 (item 2): a failed island is cut for the session.
+        // 3.1.1 (item 3): Safe Mode cuts it too.
+        if (state.islandOn && !FeatureSessionState.isDisabled(FeatureId.ISLAND) && !safeMode && !editMode && !drawerOpen && !showSearchCard && !showSettingsPanel && !quickPanelOpen && !calmOpen) {
+            IslandHomeOverlay(
+                labelForPkg = { pkg -> appsByKey.values.firstOrNull { it.pkg == pkg }?.label ?: pkg },
+                onLaunchPkg = { pkg ->
+                    appsByKey.values.firstOrNull { it.pkg == pkg }?.let { launchEntry(it) }
+                },
+                reduceMotion = state.reduceMotion,
+            )
+        }
+
         // M7 Wave 2 Library hosting: LibraryOverlay directly (the M7
         // entry point for new hosts; the legacy DrawerOverlay wrapper is
         // left intact for its other callers but no longer used here).
@@ -2609,7 +2871,14 @@ fun HavenRoot(
         // `setCategoryOverridesJson` (does not exist yet — coordinator
         // adds it to Settings.kt alongside the field; until then this
         // block does not compile, like the other new-key reads here).
-        if (drawerOpen) {
+        // 3.1.1 (item 6): translation-only open — the sheet slides
+        // in from the bottom; its alpha is never animated, and the
+        // home behind dims with the 40% scrim inside the sheet.
+        AnimatedVisibility(
+            visible = drawerOpen,
+            enter = slideInVertically { it },
+            exit = slideOutVertically { it },
+        ) {
             LibraryOverlay(
                 app = app,
                 state = state,
@@ -2658,6 +2927,50 @@ fun HavenRoot(
                     closeDrawer()
                     openSettingsPanel(settingsRouteForDrawerSection(name))
                 },
+                // 3.1 Phase F (F3): one tap applies the whole compound.
+                // Immediate actions (launch, hub, Calm) run first;
+                // setting actions park once for the panel-open effect
+                // (after begin, so Changes shows them), landing on the
+                // last setting action's hub. In a mixed compound the
+                // panel destination is the setting hub, not an earlier
+                // hub command — every action still executes exactly once.
+                onAssistCommand = { commands ->
+                    scope.launch {
+                        app.settings.recordAssistUse(
+                            AssistFeatureId.SEARCH_COMMANDS, System.currentTimeMillis(),
+                        )
+                    }
+                    val (immediate, setting) = commands.partition { cmd ->
+                        cmd.action is AssistAction.OpenApp ||
+                            cmd.action is AssistAction.OpenHub ||
+                            cmd.action is AssistAction.ToggleCalm
+                    }
+                    for (cmd in immediate) {
+                        when (val action = cmd.action) {
+                            is AssistAction.OpenApp -> {
+                                val entry = appsByKey[action.appKey]
+                                if (entry != null) {
+                                    closeDrawer()
+                                    launchEntry(entry)
+                                }
+                            }
+                            is AssistAction.OpenHub -> {
+                                closeDrawer()
+                                openSettingsPanel(action.route)
+                            }
+                            is AssistAction.ToggleCalm -> {
+                                closeDrawer()
+                                enterCalm()
+                            }
+                            else -> Unit
+                        }
+                    }
+                    if (setting.isNotEmpty()) {
+                        pendingAssistActions = setting.map { it.action }
+                        closeDrawer()
+                        openSettingsPanel(setting.last().hubRoute ?: "home")
+                    }
+                },
                 // Drag-out: dismiss the Library at drag start so the
                 // home/dock drop target can receive the platform drag
                 // (the drag itself keeps running across the dismissal).
@@ -2695,143 +3008,128 @@ fun HavenRoot(
         }
 
 
-/**
- * M7 Wave 2 dock menu row. Same shape as the drawer's MenuRow, defined
- * here because that one is private to Drawer.kt and this worker may not
- * widen Drawer.kt beyond the Categories plug (which needed no edit).
- */
-@Composable
-fun DockMenuRow(text: String, onClick: () -> Unit) {
-    val palette = LocalPalette.current
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text, color = palette.onSurface, fontSize = 15.sp)
-    }
-}
-
         // M7 Wave 2 dock icon menu: OneDock's onAppLongPress contract.
         // Same rows as the Library menu, adapted to the dock: pinned
         // apps offer removal, recents offer adding (when room).
         val dockEntry = dockMenuEntry
         if (dockEntry != null) {
-            AlertDialog(
-                onDismissRequest = { dockMenuEntry = null },
-                title = { Text(dockEntry.label) },
-                text = {
-                    Column {
-                        DockMenuRow("Launch") {
+            // 3.1 Phase C: Glass3 dialog with icon+label rows (48dp);
+            // Uninstall is destructive (danger tint + text).
+            HavenGlassDialog(
+                onDismiss = { dockMenuEntry = null },
+                title = dockEntry.label,
+                buttons = {
+                    TextButton(onClick = { dockMenuEntry = null }) { Text("Cancel") }
+                },
+                content = {
+                    HavenMenuRow(HavenIcon.MediaPlay, "Launch") {
+                        dockMenuEntry = null
+                        launchEntry(dockEntry)
+                    }
+                    if (dockEntry.key in state.dock) {
+                        HavenMenuRow(HavenIcon.Layers, "Remove from dock") {
                             dockMenuEntry = null
-                            launchEntry(dockEntry)
+                            scope.launch {
+                                app.settings.setDock(state.dock - dockEntry.key)
+                            }
                         }
-                        if (dockEntry.key in state.dock) {
-                            DockMenuRow("Remove from dock") {
+                        // M9 Worker B: dock reorder / move-out
+                        // (TalkBack/keyboard-safe). Pointer drag
+                        // reorder needs a shared grid↔dock drag
+                        // geometry that does not exist yet — the
+                        // menu rows are the shipped path.
+                        val dockIdx = state.dock.indexOf(dockEntry.key)
+                        if (dockIdx > 0) {
+                            HavenMenuRow(HavenIcon.Back, "Move left") {
                                 dockMenuEntry = null
+                                val next = state.dock.toMutableList().also {
+                                    it[dockIdx] = it[dockIdx - 1]
+                                    it[dockIdx - 1] = dockEntry.key
+                                }
+                                scope.launch { app.settings.setDock(next) }
+                            }
+                        }
+                        if (dockIdx < state.dock.size - 1) {
+                            HavenMenuRow(HavenIcon.ChevronRight, "Move right") {
+                                dockMenuEntry = null
+                                val next = state.dock.toMutableList().also {
+                                    it[dockIdx] = it[dockIdx + 1]
+                                    it[dockIdx + 1] = dockEntry.key
+                                }
+                                scope.launch { app.settings.setDock(next) }
+                            }
+                        }
+                        HavenMenuRow(HavenIcon.Home, "Move to home") {
+                            dockMenuEntry = null
+                            val targetPage = hostCurrentGridPage ?: 0
+                            val spot = findSpot(items, targetPage, 2, 2, colsUHost, rowsUHost)
+                            if (spot == null) {
+                                toastText = "No room on that page"
+                            } else {
+                                pushUndo()
+                                val item = HomeItem(
+                                    "app:${dockEntry.key}", ItemKind.APP, targetPage,
+                                    spot.first, spot.second, 2, 2, dockEntry.key,
+                                )
                                 scope.launch {
+                                    app.db.homeItems().upsertAll(listOf(item))
                                     app.settings.setDock(state.dock - dockEntry.key)
                                 }
                             }
-                            // M9 Worker B: dock reorder / move-out
-                            // (TalkBack/keyboard-safe). Pointer drag
-                            // reorder needs a shared grid↔dock drag
-                            // geometry that does not exist yet — the
-                            // menu rows are the shipped path.
-                            val dockIdx = state.dock.indexOf(dockEntry.key)
-                            if (dockIdx > 0) {
-                                DockMenuRow("Move left") {
-                                    dockMenuEntry = null
-                                    val next = state.dock.toMutableList().also {
-                                        it[dockIdx] = it[dockIdx - 1]
-                                        it[dockIdx - 1] = dockEntry.key
-                                    }
-                                    scope.launch { app.settings.setDock(next) }
-                                }
-                            }
-                            if (dockIdx < state.dock.size - 1) {
-                                DockMenuRow("Move right") {
-                                    dockMenuEntry = null
-                                    val next = state.dock.toMutableList().also {
-                                        it[dockIdx] = it[dockIdx + 1]
-                                        it[dockIdx + 1] = dockEntry.key
-                                    }
-                                    scope.launch { app.settings.setDock(next) }
-                                }
-                            }
-                            DockMenuRow("Move to home") {
-                                dockMenuEntry = null
-                                val targetPage = hostCurrentGridPage ?: 0
-                                val spot = findSpot(items, targetPage, 2, 2, colsUHost, rowsUHost)
-                                if (spot == null) {
-                                    toastText = "No room on that page"
-                                } else {
-                                    pushUndo()
-                                    val item = HomeItem(
-                                        "app:${dockEntry.key}", ItemKind.APP, targetPage,
-                                        spot.first, spot.second, 2, 2, dockEntry.key,
-                                    )
-                                    scope.launch {
-                                        app.db.homeItems().upsertAll(listOf(item))
-                                        app.settings.setDock(state.dock - dockEntry.key)
-                                    }
-                                }
-                            }
-                        } else if (state.dock.size < state.dockMax) {
-                            DockMenuRow("Add to dock") {
-                                dockMenuEntry = null
-                                scope.launch {
-                                    app.settings.setDock(state.dock + dockEntry.key)
-                                }
-                            }
-                        } else {
-                            DockMenuRow("Dock is full") { dockMenuEntry = null }
                         }
-                        DockMenuRow("Edit label") {
-                            dockMenuEntry = null
-                            dockLabelEntry = dockEntry
-                        }
-                        DockMenuRow("Edit icon") {
-                            dockMenuEntry = null
-                            dockIconEntry = dockEntry
-                        }
-                        DockMenuRow("Hide app") {
+                    } else if (state.dock.size < state.dockMax) {
+                        HavenMenuRow(HavenIcon.Layers, "Add to dock") {
                             dockMenuEntry = null
                             scope.launch {
-                                app.settings.setHiddenJson(
-                                    encodeMembers((hidden + dockEntry.key).toList()),
-                                )
+                                app.settings.setDock(state.dock + dockEntry.key)
                             }
                         }
-                        DockMenuRow("App info") {
-                            dockMenuEntry = null
-                            try {
-                                context.startActivity(
-                                    Intent(
-                                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                        Uri.parse("package:" + dockEntry.pkg),
-                                    ),
-                                )
-                            } catch (t: Throwable) {
-                                // system activity unavailable
-                            }
+                    } else {
+                        HavenMenuRow(HavenIcon.Layers, "Dock is full") { dockMenuEntry = null }
+                    }
+                    HavenMenuRow(HavenIcon.Gear, "Edit label") {
+                        dockMenuEntry = null
+                        dockLabelEntry = dockEntry
+                    }
+                    HavenMenuRow(HavenIcon.Image, "Edit icon") {
+                        dockMenuEntry = null
+                        dockIconEntry = dockEntry
+                    }
+                    HavenMenuRow(HavenIcon.Eye, "Hide app") {
+                        dockMenuEntry = null
+                        scope.launch {
+                            app.settings.setHiddenJson(
+                                encodeMembers((hidden + dockEntry.key).toList()),
+                            )
                         }
-                        DockMenuRow("Uninstall") {
-                            dockMenuEntry = null
-                            try {
-                                context.startActivity(
-                                    Intent(
-                                        Intent.ACTION_DELETE,
-                                        Uri.parse("package:" + dockEntry.pkg),
-                                    ),
-                                )
-                            } catch (t: Throwable) {
-                                // system activity unavailable
-                            }
+                    }
+                    HavenMenuRow(HavenIcon.Info, "App info") {
+                        dockMenuEntry = null
+                        try {
+                            context.startActivity(
+                                Intent(
+                                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:" + dockEntry.pkg),
+                                ),
+                            )
+                        } catch (t: Throwable) {
+                            // system activity unavailable
+                        }
+                    }
+                    HavenMenuRow(HavenIcon.Close, "Uninstall", destructive = true) {
+                        dockMenuEntry = null
+                        try {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_DELETE,
+                                    Uri.parse("package:" + dockEntry.pkg),
+                                ),
+                            )
+                        } catch (t: Throwable) {
+                            // system activity unavailable
                         }
                     }
                 },
-                confirmButton = {},
-                dismissButton = { TextButton(onClick = { dockMenuEntry = null }) { Text("Cancel") } },
             )
         }
 
@@ -2996,10 +3294,10 @@ fun DockMenuRow(text: String, onClick: () -> Unit) {
         // M10 Level 1 quick customize (Phase 3): long-press empty
         // space opens this compact bar over the live home (home stays
         // visible; the bar floats above the dock, never over it).
-        // Wallpaper / Layout / Widgets / Dock / Style / Home settings
-        // + Edit home (the previous long-press action, kept so the
-        // edit-mode entry path is preserved). Tapping outside or
-        // Back dismisses; every action closes the bar first.
+        // 3.1 A10: items come from quickCustomizeMenu() (Wallpaper /
+        // Layout / Widgets / Dock / Look / Home settings + Edit home;
+        // "Style" was renamed "Look"). Tapping outside or Back
+        // dismisses; every action closes the bar first.
         if (showQuickCustomize) {
             Box(Modifier.fillMaxSize()) {
                 Box(
@@ -3019,7 +3317,10 @@ fun DockMenuRow(text: String, onClick: () -> Unit) {
                             end = 16.dp,
                         ),
                 ) {
-                    GlassSurface(shape = RoundedCornerShape(28.dp)) {
+                    // 3.1 Phase C: Glass3 pill row with icon+label items.
+                    Box(
+                        Modifier.glass(GlassLevel.GLASS3, RoundedCornerShape(50)),
+                    ) {
                         Row(
                             Modifier
                                 .horizontalScroll(rememberScrollState())
@@ -3027,20 +3328,54 @@ fun DockMenuRow(text: String, onClick: () -> Unit) {
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            for ((label, action) in listOf(
-                                "Wallpaper" to { openSettingsPanel("look") },
-                                "Layout" to { openSettingsPanel("home-dock") },
-                                "Widgets" to { showWidgetSheet = true },
-                                "Dock" to { openSettingsPanel("home-dock") },
-                                "Style" to { openSettingsPanel("look") },
-                                "Home settings" to { openSettingsPanel("home") },
-                                "Edit home" to { enterEditMode() },
-                            )) {
-                                TextButton(onClick = {
-                                    showQuickCustomize = false
-                                    action()
-                                }) {
-                                    Text(label, color = palette.onSurface, fontSize = 13.sp)
+                            for (item in quickCustomizeMenu()) {
+                                val icon = when (item.destination) {
+                                    QuickMenuDestination.WALLPAPER -> HavenIcon.Image
+                                    QuickMenuDestination.GRID -> HavenIcon.Grid
+                                    QuickMenuDestination.WIDGET_SHEET -> HavenIcon.Apps
+                                    QuickMenuDestination.DOCK -> HavenIcon.Layers
+                                    QuickMenuDestination.LOOK -> HavenIcon.Eye
+                                    QuickMenuDestination.HOME_DOCK -> HavenIcon.Gear
+                                    QuickMenuDestination.EDIT_HOME -> HavenIcon.Home
+                                }
+                                Row(
+                                    Modifier
+                                        .heightIn(min = 48.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .clickable {
+                                            showQuickCustomize = false
+                                            when (item.destination) {
+                                                QuickMenuDestination.WALLPAPER ->
+                                                    openSettingsPanel("look", "wallpaper")
+                                                QuickMenuDestination.GRID ->
+                                                    openSettingsPanel("home-dock", "grid")
+                                                // 3.1 Phase C fix: this branch
+                                                // was a lambda literal and
+                                                // did nothing; Widgets
+                                                // never opened the sheet.
+                                                QuickMenuDestination.WIDGET_SHEET ->
+                                                    showWidgetSheet = true
+                                                QuickMenuDestination.DOCK ->
+                                                    openSettingsPanel("home-dock", "dock")
+                                                QuickMenuDestination.LOOK ->
+                                                    openSettingsPanel("look")
+                                                QuickMenuDestination.HOME_DOCK ->
+                                                    openSettingsPanel("home-dock")
+                                                QuickMenuDestination.EDIT_HOME ->
+                                                    enterEditMode()
+                                            }
+                                        }
+                                        .padding(horizontal = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    HavenIconImage(
+                                        icon,
+                                        null,
+                                        size = 20.dp,
+                                        tint = palette.muted,
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(item.label, color = palette.onSurface, fontSize = 13.sp)
                                 }
                             }
                         }
@@ -3055,12 +3390,45 @@ fun DockMenuRow(text: String, onClick: () -> Unit) {
         // provided here so hub previews (grid, wallpaper) reach home.
         // UNCHANGED by M7 Wave 2 (this worker must not regress it): the
         // panel still sits over the live home below it.
+        // Coordination fix §6: opening Settings from edit mode first
+        // exits edit mode under Done semantics (edit-exit auto-snapshot
+        // taken), then the panel opens — never a stacked toolbar-plus-
+        // panel state.
+        LaunchedEffect(showSettingsPanel) {
+            if (showSettingsPanel && editMode) {
+                editMode = false
+                app.layoutStore.autoSnapshotOnEditExit()
+            }
+        }
         if (showSettingsPanel) {
             CompositionLocalProvider(LocalDraftLayer provides panelDraft) {
                 SettingsPanel(
                     state = panelState,
                     homeContent = {},
                     onClose = {
+                        // Coordination fix §6: commit a draft accent
+                        // preview in one silent setAccentSelection write
+                        // (the draft is panel-scoped, so the preview
+                        // survives hub navigation). Anything else the
+                        // draft held is discarded with it, as before.
+                        val draftAccent = panelDraft.draft
+                        if (draftAccent != null &&
+                            (draftAccent.accentSource != liveState.accentSource ||
+                                draftAccent.accentCurated != liveState.accentCurated ||
+                                draftAccent.accentCustomArgb != liveState.accentCustomArgb ||
+                                draftAccent.accentStrength != liveState.accentStrength ||
+                                draftAccent.accentRecents != liveState.accentRecents)
+                        ) {
+                            scope.launch {
+                                app.settings.setAccentSelection(
+                                    accentSelectionOf(
+                                        draftAccent.accentSource, draftAccent.accentCurated,
+                                        draftAccent.accentCustomArgb, draftAccent.accentStrength,
+                                        draftAccent.accentRecents,
+                                    ),
+                                )
+                            }
+                        }
                         panelDraft.discard()
                         showSettingsPanel = false
                     },
@@ -3199,8 +3567,10 @@ private fun AtAGlanceLine(
         val date = SimpleDateFormat("EEE, d MMM", Locale.getDefault()).format(Date())
         val w = weather
         if (state.atAGlance == 2 && w != null && w.cityName == state.weatherCity) {
-            val (label, symbol) = weatherInfo(w.code)
-            "$date  ·  $symbol ${w.temp.roundToInt()}° $label"
+            // 3.1 Phase B4: the glance line is a plain String, so it
+            // carries no weather glyph any more (label + temp remain).
+            val (label, _) = weatherInfo(w.code)
+            "$date  ·  ${w.temp.roundToInt()}° $label"
         } else {
             date
         }
@@ -3299,11 +3669,19 @@ private fun AtAGlanceLine(
         }
     }
     if (showOptions) {
-        AlertDialog(
-            onDismissRequest = { showOptions = false },
-            title = { Text("At a glance") },
-            text = {
-                Column {
+        HavenGlassDialog(
+            onDismiss = { showOptions = false },
+            title = "At a glance",
+            buttons = {
+                TextButton(onClick = { showOptions = false }) { Text("Close") }
+                TextButton(
+                    onClick = {
+                        showOptions = false
+                        onOpenSettings()
+                    },
+                ) { Text("Settings") }
+            },
+            content = {
                     TextButton(
                         onClick = {
                             scope.launch { app.settings.setAtAGlance(1) }
@@ -3328,18 +3706,6 @@ private fun AtAGlanceLine(
                             onEnterCalm()
                         },
                     ) { Text("Calm mode") }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showOptions = false
-                        onOpenSettings()
-                    },
-                ) { Text("Settings") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showOptions = false }) { Text("Close") }
             },
         )
     }
@@ -3365,11 +3731,14 @@ private fun ResizeDialog(
     val startH = if (step == 2) (initH + 1) / 2 * 2 else initH
     var w by remember(item.id) { mutableIntStateOf(startW) }
     var h by remember(item.id) { mutableIntStateOf(startH) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Resize") },
-        text = {
-            Column {
+    HavenGlassDialog(
+        onDismiss = onDismiss,
+        title = "Resize",
+        buttons = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+            HavenDialogFilledButton(label = "Apply", onClick = { onSave(w, h) })
+        },
+        content = {
                 StepperRow("Width", w, colsU, step) { w = it }
                 StepperRow("Height", h, rowsU, step) { h = it }
                 // M9 §3.4: built-in widgets offer size chips (Small 2×2,
@@ -3415,10 +3784,7 @@ private fun ResizeDialog(
                     color = palette.muted,
                     fontSize = 12.sp,
                 )
-            }
         },
-        confirmButton = { TextButton(onClick = { onSave(w, h) }) { Text("Apply") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -3538,6 +3904,10 @@ fun AppIconImage(entry: AppEntry, appRepo: AppRepository, size: androidx.compose
 @Composable
 fun BadgeOverlay(pkg: String, extraCount: Int = -1) {
     val state = LocalState.current
+    // 3.1 Phase B7: the badge colour is the home token, not a literal —
+    // the same dark/light red HomeColors already resolved elsewhere.
+    val badgePalette = LocalPalette.current
+    val badgeColor = homeColorsFor(badgePalette, badgePalette.bg.luminance() < 0.5f).badge
     if (state.badgeMode == 0) return
     // Per-app dot silencing (Settings -> Icons): a silenced app shows no
     // dot or count, whatever the listener reports.
@@ -3557,7 +3927,7 @@ fun BadgeOverlay(pkg: String, extraCount: Int = -1) {
                     .padding(2.dp)
                     .size(11.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFE53935))
+                    .background(badgeColor)
                     .border(1.5.dp, Color.White, CircleShape),
             )
         } else {
@@ -3565,7 +3935,7 @@ fun BadgeOverlay(pkg: String, extraCount: Int = -1) {
                 Modifier
                     .padding(1.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(Color(0xFFE53935))
+                    .background(badgeColor)
                     .border(1.dp, Color.White, RoundedCornerShape(50))
                     .padding(horizontal = 5.dp, vertical = 1.dp),
             ) {
@@ -3663,11 +4033,13 @@ fun AppIconPickerDialog(
     LaunchedEffect(entry.key) {
         packs = withContext(Dispatchers.IO) { IconPacks.discover(context) }
     }
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("Icon for ${entry.label}") },
-        text = {
-            Column {
+    HavenGlassDialog(
+        onDismiss = onClose,
+        title = "Icon for ${entry.label}",
+        buttons = {
+            TextButton(onClick = onClose) { Text("Cancel") }
+        },
+        content = {
                 // "" = follow the global pack; "system" = this app's own icon.
                 val rows = listOf("" to "Follow global pack") +
                     listOf("system" to "System icon") +
@@ -3695,7 +4067,12 @@ fun AppIconPickerDialog(
                             modifier = Modifier.weight(1f),
                         )
                         if (value == currentPack) {
-                            Text("✓", color = palette.accent, fontSize = 15.sp)
+                            Icon(
+                                HavenIcon.Check.vector(),
+                                contentDescription = "Selected",
+                                tint = palette.accent,
+                                modifier = Modifier.size(15.dp),
+                            )
                         }
                     }
                 }
@@ -3707,9 +4084,6 @@ fun AppIconPickerDialog(
                         modifier = Modifier.padding(top = 6.dp),
                     )
                 }
-            }
         },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
     )
 }

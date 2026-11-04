@@ -3,6 +3,7 @@ package app.havenos.launcher.ui
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -15,8 +16,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -29,20 +35,37 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.havenos.launcher.HavenApp
 import app.havenos.launcher.data.SettingsState
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
+import app.havenos.launcher.ui.glass.HavenSegmented
+import app.havenos.launcher.ui.glass.HavenSkeleton
+import app.havenos.launcher.ui.glass.vector
+import app.havenos.launcher.ui.mascot.MascotCharacter
+import app.havenos.launcher.ui.mascot.MascotExpression
+import app.havenos.launcher.ui.mascot.MascotFigure
+import app.havenos.launcher.ui.mascot.StaticSpriteFrame
+import app.havenos.launcher.ui.mascot.USE_PIXEL_MASCOT
+import app.havenos.launcher.ui.mascot.rememberSpriteSet
+import app.havenos.launcher.ui.mascot.spriteScaleFor
+import app.havenos.launcher.ui.settings.shell.PanelDeepLink
 import app.havenos.launcher.data.network.ApiCacheKeys
 import app.havenos.launcher.data.network.ApiClient
+import app.havenos.launcher.data.network.ApiFailureClass
 import app.havenos.launcher.data.network.ApiEndpoints
 import app.havenos.launcher.data.network.ApiId
 import app.havenos.launcher.data.network.ApiStore
 import app.havenos.launcher.data.network.ApiToggles
 import app.havenos.launcher.data.network.CachedState
+import app.havenos.launcher.data.network.CardStatus
 import app.havenos.launcher.data.network.lastUpdatedLabel
 import app.havenos.launcher.data.network.offlineLabel
 import app.havenos.launcher.theme.GlassSurface
@@ -306,12 +329,85 @@ fun parseGithubEvents(json: String): List<GithubEvent> {
 fun apodDisplayUrl(apod: ApodData): String =
     if (apod.mediaType.equals("video", ignoreCase = true)) apod.thumbnailUrl else apod.url
 
-/** "HH:mm" from an ISO-8601 timestamp, with a UTC marker when the offset is UTC. */
+/**
+ * 3.1 A1: "HH:mm" in the DEVICE's local timezone from an ISO-8601
+ * timestamp. Unparseable input falls back to the raw HH:mm slice
+ * (previous behavior), never a crash and never the word "null".
+ */
 fun scoreTimeLabel(iso: String): String {
+    if (iso.isBlank()) return ""
+    val parsed = try {
+        val inFmt = when {
+            iso.endsWith("Z") ->
+                java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
+            iso.contains("+") || iso.lastIndexOf("-") > 10 ->
+                java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US)
+            else -> null
+        }?.apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        val date = inFmt?.parse(iso.trim())
+        date?.let {
+            java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(it)
+        }
+    } catch (t: Throwable) {
+        null
+    }
+    if (parsed != null) return parsed
     if (iso.length < 16) return iso
-    val hm = iso.substring(11, 16)
-    val utc = iso.endsWith("Z") || iso.contains("+00:00")
-    return if (utc) "$hm UTC" else hm
+    return iso.substring(11, 16)
+}
+
+/**
+ * 3.1 A1: plain labels for provider status codes, in ONE table.
+ * A code the table does not know shows no status text — in
+ * particular "Abnormal" is NOT mapped, because its meaning is not
+ * documented in the repo's API notes or the provider docs the code
+ * can see; guessing it would invent a meaning. The raw
+ * status_text field is never rendered anymore.
+ */
+val SCORE_STATUS_LABELS: Map<String, String> = mapOf(
+    "upcoming" to "Not started",
+    "live" to "Live",
+    "finished" to "Finished",
+    "delayed" to "Delayed",
+)
+
+/**
+ * A score cell counts as missing when blank, a lone dash (live
+ * cricket reports "-" before any numeric score exists), or the
+ * literal string "null" (defensive: a JSON null must never reach
+ * the screen as text, whatever path produced it).
+ */
+fun isMissingScore(value: String): Boolean =
+    value.isBlank() || value == "-" || value.equals("null", ignoreCase = true)
+
+/**
+ * 3.1 A1: one display model per scores row — teams on the left,
+ * result or time on the right, competition as a muted second line.
+ * Null when both team names are missing: the row is dropped, never
+ * rendered. Rules: not started shows "vs" (in the teams string)
+ * plus the local start time when known; live/finished show the
+ * provider's score format; missing scores on a live/finished match
+ * show the mapped status label only; an unknown status shows no
+ * status text at all.
+ */
+data class ScoreRowDisplay(val teams: String, val right: String, val competition: String)
+
+fun ScoreMatch.toDisplay(): ScoreRowDisplay? {
+    val teams = listOf(home, away).filter { it.isNotBlank() }
+    if (teams.isEmpty()) return null
+    val statusKey = status.lowercase()
+    val label = SCORE_STATUS_LABELS[statusKey].orEmpty()
+    val bothScores = !isMissingScore(homeScore) && !isMissingScore(awayScore)
+    val right = when {
+        bothScores -> "$homeScore – $awayScore"
+        statusKey == "upcoming" -> scoreTimeLabel(time).ifBlank { label }
+        else -> label
+    }
+    return ScoreRowDisplay(
+        teams = teams.joinToString(" vs "),
+        right = right,
+        competition = competition,
+    )
 }
 
 /** Live matches first, then upcoming, then finished; API order kept within each group. */
@@ -364,33 +460,261 @@ private fun ApiCardHeader(title: String) {
 
 /**
  * The "last updated / offline" status line every API card carries.
- * Stale data + this label beats a blank card and beats a spinner:
- * offline with cached data says so, offline with nothing says so,
- * otherwise the last-updated time is shown.
+ * 3.1 A2: the last-result class wins over the age-derived status.
+ * Offline with cache shows the cached content plus Updated HH:MM;
+ * Offline without cache shows "Offline. Nothing saved yet.";
+ * RateLimited shows "Busy right now. Try again later."; every other
+ * failure class shows "Couldn't load." with a working Retry (only
+ * while the toggle is on, i.e. when [onRetry] is non-null). The
+ * phrase "check your connection" appears ONLY for the Offline
+ * class. When the last refresh succeeded, the coordination-fix §7
+ * age status (Fresh/Stale/Expired) drives the line as before.
+ * A null status (initial states) falls back to the old lines.
+ * 3.1 Phase C: the footer anatomy is Updated HH:MM · Source on
+ * success paths; error/offline lines keep their A2 text.
  */
 @Composable
-private fun ApiStatusLine(state: CachedState<*>) {
+private fun ApiStatusLine(
+    state: CachedState<*>,
+    onRetry: (() -> Unit)? = null,
+    isRetrying: Boolean = false,
+    source: String = "",
+) {
     val palette = LocalPalette.current
-    val line = when {
-        state.isOffline -> offlineLabel(state.data != null)
-        state.lastUpdatedMs > 0L -> lastUpdatedLabel(state.lastUpdatedMs)
-        state.isRefreshing -> "Loading…"
-        else -> "Never updated"
+    if (isRetrying) {
+        Text("Loading…", color = palette.muted, fontSize = 12.sp, maxLines = 1)
+        return
     }
-    Text(line, color = palette.muted, fontSize = 12.sp, maxLines = 1)
+    // Success footer: Updated HH:MM · Source.
+    fun updatedLine(lastUpdatedMs: Long): String {
+        val label = lastUpdatedLabel(lastUpdatedMs)
+        return if (source.isBlank()) label else "$label · $source"
+    }
+    when (val line = failureLineFor(state.failureClass, state.data != null, state.lastUpdatedMs)) {
+        is FailureLine.Updated -> {
+            Text(
+                updatedLine(line.lastUpdatedMs),
+                color = palette.muted, fontSize = 12.sp, maxLines = 1,
+            )
+            return
+        }
+        FailureLine.OfflineEmpty -> {
+            Text(
+                "Offline. Nothing saved yet.",
+                color = palette.muted, fontSize = 12.sp, maxLines = 1,
+            )
+            return
+        }
+        FailureLine.Busy -> {
+            Text(
+                "Busy right now. Try again later.",
+                color = palette.muted, fontSize = 12.sp, maxLines = 1,
+            )
+            return
+        }
+        FailureLine.CouldNotLoad -> {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Couldn't load.",
+                    color = palette.muted,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (onRetry != null) {
+                    TextButton(onClick = onRetry, contentPadding = PaddingValues(0.dp)) {
+                        Text("Retry", fontSize = 12.sp)
+                    }
+                }
+            }
+            return
+        }
+        FailureLine.None -> Unit // fall through to the age-derived status below
+    }
+    when (val status = state.cardStatus) {
+        is CardStatus.Expired -> {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Couldn't refresh — showing ${lastUpdatedLabel(status.lastUpdatedMs)}",
+                    color = palette.muted,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (onRetry != null) {
+                    TextButton(onClick = onRetry, contentPadding = PaddingValues(0.dp)) {
+                        Text("Retry", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        CardStatus.Stale -> Text(
+            offlineLabel(state.data != null),
+            color = palette.muted, fontSize = 12.sp, maxLines = 1,
+        )
+        CardStatus.Fresh -> Text(
+            updatedLine(state.lastUpdatedMs),
+            color = palette.muted, fontSize = 12.sp, maxLines = 1,
+        )
+        else -> {
+            val line = when {
+                state.isOffline -> offlineLabel(state.data != null)
+                state.lastUpdatedMs > 0L -> updatedLine(state.lastUpdatedMs)
+                state.isRefreshing -> "Loading…"
+                else -> "Never updated"
+            }
+            Text(line, color = palette.muted, fontSize = 12.sp, maxLines = 1)
+        }
+    }
 }
 
-/** Honest empty state for a card with no cached data and no live data. */
+/**
+ * 3.1 A2: pure half of the status line's failure branch — which
+ * line a failure class renders. The composable only turns the
+ * result into Text; the decision is unit-testable here.
+ */
+sealed interface FailureLine {
+    data class Updated(val lastUpdatedMs: Long) : FailureLine
+    data object OfflineEmpty : FailureLine
+    data object Busy : FailureLine
+    data object CouldNotLoad : FailureLine
+    data object None : FailureLine
+}
+
+fun failureLineFor(
+    failureClass: ApiFailureClass?,
+    hasData: Boolean,
+    lastUpdatedMs: Long,
+): FailureLine = when (failureClass) {
+    null -> FailureLine.None
+    ApiFailureClass.OFFLINE ->
+        if (hasData) FailureLine.Updated(lastUpdatedMs) else FailureLine.OfflineEmpty
+    ApiFailureClass.RATE_LIMITED -> FailureLine.Busy
+    else -> FailureLine.CouldNotLoad
+}
+
+/**
+ * Coordination fix §7: manual retry for an Expired card. Refreshes
+ * via the existing [ApiStore.refreshApi], then runs [onRefreshed] so
+ * the card's flow re-reads the row. Returns (retry action or null,
+ * retrying flag). The action is null while the API's toggle is off,
+ * so the Retry button only renders while the toggle is on. No retry
+ * storm: one user-initiated refresh; worker cadence unchanged.
+ */
+@Composable
+private fun rememberApiRetry(
+    apiStore: ApiStore,
+    api: ApiId,
+    onRefreshed: () -> Unit,
+): Pair<(() -> Unit)?, Boolean> {
+    val context = LocalContext.current
+    val app = HavenApp.of(context)
+    val settingsState by app.settings.state.collectAsState()
+    val scope = rememberCoroutineScope()
+    var retrying by remember { mutableStateOf(false) }
+    val onRetry: (() -> Unit)? = if (!ApiToggles.isEnabled(settingsState, api)) {
+        null
+    } else {
+        {
+            scope.launch {
+                retrying = true
+                try {
+                    apiStore.refreshApi(api, app.settings.state.value)
+                } catch (t: Throwable) {
+                    // 3.1.1 (item 2): unexpected refresh failure only.
+                    // Classified failures (offline, rate-limited) never
+                    // throw — they render as card status lines.
+                    if (!FeatureSessionState.isDisabled(FeatureId.ONLINE_CARDS)) {
+                        logFeatureError(context, FeatureId.ONLINE_CARDS, t)
+                        FeatureSessionState.disable(FeatureId.ONLINE_CARDS)
+                        try {
+                            Toast.makeText(
+                                context,
+                                FeatureId.ONLINE_CARDS.toastText,
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        } catch (_: Exception) {
+                        }
+                    }
+                } finally {
+                    retrying = false
+                    onRefreshed()
+                }
+            }
+        }
+    }
+    return onRetry to retrying
+}
+
+/**
+ * Honest empty state for a card with no cached data and no live data.
+ * 3.1 A2: the phrase "check your connection" appears ONLY when the
+ * last result class is Offline; every other failure says "try again
+ * later" without it, so a device that is online never blames the
+ * connection.
+ */
 @Composable
 private fun ApiEmptyLine(state: CachedState<*>, what: String) {
     val palette = LocalPalette.current
     Text(
-        if (state.isOffline) "No saved $what yet — check your connection and try again later."
-        else if (state.isRefreshing) "Loading $what…"
-        else "No $what yet.",
+        when {
+            state.failureClass == ApiFailureClass.OFFLINE ->
+                "No saved $what yet — check your connection and try again later."
+            state.isRefreshing -> "Loading $what…"
+            state.failureClass != null || state.isOffline ->
+                "No saved $what yet — try again later."
+            else -> "No $what yet."
+        },
         color = palette.muted,
         fontSize = 13.sp,
     )
+}
+
+/** 3.1 Phase C: initial-load skeleton (no data, refreshing, no failure recorded yet). */
+private fun isCardLoading(state: CachedState<*>): Boolean =
+    state.data == null && state.isRefreshing && state.failureClass == null
+
+/** 3.1 Phase C: skeleton bars while a card's first load is in flight. */
+@Composable
+private fun ApiCardSkeleton() {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HavenSkeleton(Modifier.fillMaxWidth().height(16.dp))
+        HavenSkeleton(Modifier.fillMaxWidth(0.7f).height(16.dp))
+        HavenSkeleton(Modifier.fillMaxWidth(0.5f).height(16.dp))
+    }
+}
+
+/**
+ * 3.1 Phase C: offline/error/empty states use a static mascot pose
+ * (SAD, no blink, no animation) beside the honest A2 text.
+ */
+@Composable
+private fun ApiEmptyState(state: CachedState<*>, what: String, character: MascotCharacter) {
+    val palette = LocalPalette.current
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        // 3.1 Phase E: pixel sad frame when available, else the
+        // vector pose. Static image only, never the roaming overlay.
+        val sadSet = rememberSpriteSet(character, palette.accent.toArgb())
+        if (USE_PIXEL_MASCOT && sadSet != null) {
+            StaticSpriteFrame(
+                sadSet, 30,
+                spriteScaleFor(48f, LocalDensity.current.density),
+            )
+        } else {
+            MascotFigure(
+                character = character,
+                expression = MascotExpression.SAD,
+                size = 48.dp,
+                body = palette.onSurface,
+                eye = palette.surface,
+                accent = palette.accent,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Box(Modifier.weight(1f)) {
+            ApiEmptyLine(state, what)
+        }
+    }
 }
 
 /**
@@ -471,10 +795,28 @@ private fun decodeDownsampled(bytes: ByteArray, targetW: Int): android.graphics.
 
 // ------------------------------------------------------------------ cards
 
+/**
+ * 3.1 A12: re-collection key for Today card flows. Bumps on every
+ * home resume (MainActivity.onResume → HavenApp.noteHomeResumed),
+ * so a long-lived card composition re-runs cacheFirstFlow's stale
+ * check when the user returns to home — the Xiaomi-deferred-worker
+ * case — and refreshes only when the cache is actually stale.
+ * Fresh caches emit without any network call.
+ */
 @Composable
-private fun QuoteCard(apiStore: ApiStore) {
+private fun homeResumeKey(): Int {
+    val app = HavenApp.of(LocalContext.current)
+    val tick by app.homeResumedTick.collectAsState()
+    return tick
+}
+
+@Composable
+private fun QuoteCard(apiStore: ApiStore, character: MascotCharacter) {
     val palette = LocalPalette.current
-    val flow = remember(apiStore) {
+    var refreshKey by remember { mutableStateOf(0) }
+    val (onRetry, retrying) = rememberApiRetry(apiStore, ApiId.QUOTE) { refreshKey++ }
+    val resumeKey = homeResumeKey()
+    val flow = remember(apiStore, refreshKey, resumeKey) {
         apiStore.cacheFirstFlow(
             ApiId.QUOTE,
             ApiCacheKeys.quote(),
@@ -490,28 +832,40 @@ private fun QuoteCard(apiStore: ApiStore) {
             ApiCardHeader("Quote of the day")
             val quote = state.data
             if (quote != null) {
-                Text(quote.content, color = palette.onSurface, fontSize = 15.sp)
+                // 3.1 Phase C: 18sp regular + author caption.
+                Text(
+                    quote.content,
+                    color = palette.onSurface,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Normal,
+                )
                 if (quote.author.isNotBlank()) {
                     Spacer(Modifier.height(6.dp))
-                    Text("— ${quote.author}", color = palette.muted, fontSize = 13.sp, maxLines = 1)
+                    Text("— ${quote.author}", color = palette.muted, fontSize = 12.sp, maxLines = 1)
                 }
+            } else if (isCardLoading(state)) {
+                ApiCardSkeleton()
             } else {
                 // No bundled or invented quotes: first run with no
                 // cache and no network is an honest offline state.
-                ApiEmptyLine(state, "quote")
+                ApiEmptyState(state, "quote", character)
             }
             Spacer(Modifier.height(8.dp))
-            ApiStatusLine(state)
+            ApiStatusLine(state, onRetry = onRetry, isRetrying = retrying, source = "Quotable")
         }
     }
 }
 
 @Composable
-private fun ScoresCard(apiStore: ApiStore) {
+private fun ScoresCard(apiStore: ApiStore, character: MascotCharacter) {
     val palette = LocalPalette.current
     val context = LocalContext.current
     var sport by remember { mutableStateOf("cricket") }
-    val cricketFlow = remember(apiStore) {
+    var showAllScores by remember { mutableStateOf(false) }
+    var refreshKey by remember { mutableStateOf(0) }
+    val (onRetry, retrying) = rememberApiRetry(apiStore, ApiId.SCORES) { refreshKey++ }
+    val resumeKey = homeResumeKey()
+    val cricketFlow = remember(apiStore, refreshKey, resumeKey) {
         apiStore.cacheFirstFlow(
             ApiId.SCORES,
             ApiCacheKeys.scores("cricket"),
@@ -519,7 +873,7 @@ private fun ScoresCard(apiStore: ApiStore) {
         ) { ApiClient.get(ApiId.SCORES, ApiEndpoints.scores("cricket")) }
             .flowOn(Dispatchers.IO)
     }
-    val footballFlow = remember(apiStore) {
+    val footballFlow = remember(apiStore, refreshKey, resumeKey) {
         apiStore.cacheFirstFlow(
             ApiId.SCORES,
             ApiCacheKeys.scores("football"),
@@ -537,57 +891,42 @@ private fun ScoresCard(apiStore: ApiStore) {
     ApiCardFrame {
         Column(Modifier.fillMaxWidth()) {
             ApiCardHeader("Scores")
-            // Sport selector: cricket + football, the two fetched sports.
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for ((key, label) in listOf("cricket" to "Cricket", "football" to "Football")) {
-                    val selected = sport == key
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(if (selected) palette.accent else palette.surface)
-                            .clickable { sport = key }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            label,
-                            color = if (selected) palette.onSurface else palette.muted,
-                            fontSize = 13.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
+            // 3.1 Phase C: sport selector is HavenSegmented.
+            HavenSegmented(
+                options = listOf("Cricket", "Football"),
+                selected = if (sport == "football") 1 else 0,
+                onSelect = {
+                    sport = if (it == 1) "football" else "cricket"
+                    showAllScores = false
+                },
+            )
             Spacer(Modifier.height(10.dp))
             val matches = current.data
             if (matches.isNullOrEmpty()) {
-                ApiEmptyLine(current, "scores")
+                if (isCardLoading(current)) ApiCardSkeleton()
+                else ApiEmptyState(current, "scores", character)
             } else {
-                // Compact: live first, then upcoming, then finished; max 6 rows.
-                for (m in sortScoresForDisplay(matches).take(6)) {
-                    val scoreLine = if (m.homeScore.isNotBlank() || m.awayScore.isNotBlank()) {
-                        "${m.home} ${m.homeScore} – ${m.awayScore} ${m.away}"
-                    } else {
-                        "${m.home} vs ${m.away}"
-                    }
-                    val detail = when {
-                        m.statusText.isNotBlank() -> m.statusText
-                        m.time.isNotBlank() -> scoreTimeLabel(m.time)
-                        else -> ""
-                    }
+                // Compact: live first, then upcoming, then finished;
+                // 3.1 Phase C: at most 4 rows + Show more.
+                // 3.1 A1: one display model per row (teams left, result
+                // or time right, competition muted second line); raw
+                // status text and "null"/dash-pair artifacts are gone.
+                val sorted = sortScoresForDisplay(matches)
+                val shown = if (showAllScores) sorted else sorted.take(4)
+                for (m in shown) {
+                    val row = m.toDisplay() ?: continue
                     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                scoreLine.trim(),
+                                row.teams,
                                 color = palette.onSurface,
                                 fontSize = 13.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            if (m.competition.isNotBlank()) {
+                            if (row.competition.isNotBlank()) {
                                 Text(
-                                    m.competition,
+                                    row.competition,
                                     color = palette.muted,
                                     fontSize = 12.sp,
                                     maxLines = 1,
@@ -595,9 +934,9 @@ private fun ScoresCard(apiStore: ApiStore) {
                                 )
                             }
                         }
-                        if (detail.isNotBlank()) {
+                        if (row.right.isNotBlank()) {
                             Text(
-                                detail,
+                                row.right,
                                 color = palette.muted,
                                 fontSize = 12.sp,
                                 maxLines = 1,
@@ -606,9 +945,14 @@ private fun ScoresCard(apiStore: ApiStore) {
                         }
                     }
                 }
+                if (sorted.size > 4) {
+                    TextButton(onClick = { showAllScores = !showAllScores }) {
+                        Text(if (showAllScores) "Show less" else "Show more", fontSize = 13.sp)
+                    }
+                }
             }
             Spacer(Modifier.height(8.dp))
-            ApiStatusLine(current)
+            ApiStatusLine(current, onRetry = onRetry, isRetrying = retrying, source = "SportScore")
             Spacer(Modifier.height(6.dp))
             // Free-tier attribution: ALWAYS visible on the scores card,
             // in every state (data, empty, offline). Tap opens
@@ -637,18 +981,38 @@ private fun ScoresCard(apiStore: ApiStore) {
     }
 }
 
+/**
+ * 3.1 A3: crypto card states. HIDDEN = toggle off (no card, no
+ * fetch); KEY_NEEDED = toggle on without a key (compact state +
+ * Add-key button); PRICES = toggle on with a key. Crypto stays
+ * default Off for new installs (SettingsState.apiCrypto = false).
+ */
+enum class CryptoCardState { HIDDEN, KEY_NEEDED, PRICES }
+
+fun cryptoCardState(apiCryptoOn: Boolean, keyBlank: Boolean): CryptoCardState = when {
+    !apiCryptoOn -> CryptoCardState.HIDDEN
+    keyBlank -> CryptoCardState.KEY_NEEDED
+    else -> CryptoCardState.PRICES
+}
+
+/** 3.1 A3: deep-link destination for the crypto Add-key button. */
+fun cryptoAddKeyTarget(): PanelDeepLink =
+    PanelDeepLink(route = "apis", field = "coingecko-key", nonce = 0)
+
 @Composable
-private fun CryptoCard(apiStore: ApiStore, settings: SettingsState) {
+private fun CryptoCard(apiStore: ApiStore, settings: SettingsState, character: MascotCharacter) {
     val palette = LocalPalette.current
     // Key-gated: with NO user Demo key set, do NOT fetch at all —
     // never burn the shared unauthenticated quota, never show a fake
-    // price, never a blank card. The gated state names the fix.
+    // price, never a blank card. The gated state is compact with one
+    // button that deep-links to the key field in the APIs hub.
     if (settings.coingeckoKey.isBlank()) {
+        val openSettings = LocalOpenSettingsPanel.current
         ApiCardFrame {
             Column(Modifier.fillMaxWidth()) {
                 ApiCardHeader("Crypto")
                 Text(
-                    "Add your free CoinGecko Demo key in Settings → APIs to see prices.",
+                    "A free CoinGecko Demo key is needed to see prices.",
                     color = palette.onSurface,
                     fontSize = 13.sp,
                 )
@@ -658,11 +1022,23 @@ private fun CryptoCard(apiStore: ApiStore, settings: SettingsState) {
                     color = palette.muted,
                     fontSize = 12.sp,
                 )
+                // The button exists under the home host (the only real
+                // composition site); elsewhere the state still explains
+                // itself instead of showing a dead button.
+                if (openSettings != null) {
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = { openSettings("apis", cryptoAddKeyTarget().field) }) {
+                        Text("Add key", fontSize = 13.sp)
+                    }
+                }
             }
         }
         return
     }
-    val flow = remember(apiStore, settings.coingeckoKey) {
+    var refreshKey by remember { mutableStateOf(0) }
+    val (onRetry, retrying) = rememberApiRetry(apiStore, ApiId.CRYPTO) { refreshKey++ }
+    val resumeKey = homeResumeKey()
+    val flow = remember(apiStore, settings.coingeckoKey, refreshKey, resumeKey) {
         apiStore.cacheFirstFlow(
             ApiId.CRYPTO,
             ApiCacheKeys.crypto(),
@@ -683,26 +1059,35 @@ private fun CryptoCard(apiStore: ApiStore, settings: SettingsState) {
             ApiCardHeader("Crypto")
             val data = state.data
             if (data == null) {
-                ApiEmptyLine(state, "prices")
+                if (isCardLoading(state)) ApiCardSkeleton()
+                else ApiEmptyState(state, "prices", character)
             } else {
-                for ((label, usd, change) in listOf(
-                    Triple("Bitcoin", data.btcUsd, data.btcChange),
-                    Triple("Ethereum", data.ethUsd, data.ethChange),
+                // 3.1 Phase C: symbol, price, 24h change with an
+                // arrow icon + sign — never colour alone.
+                for ((symbol, usd, change) in listOf(
+                    Triple("BTC", data.btcUsd, data.btcChange),
+                    Triple("ETH", data.ethUsd, data.ethChange),
                 )) {
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(label, color = palette.onSurface, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Text(symbol, color = palette.onSurface, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                         if (!usd.isNaN()) {
                             Text(formatUsd(usd), color = palette.onSurface, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         }
                         if (!change.isNaN()) {
+                            HavenIconImage(
+                                if (change >= 0) HavenIcon.ArrowUp else HavenIcon.ArrowDown,
+                                if (change >= 0) "Up" else "Down",
+                                size = 16.dp,
+                                tint = palette.muted,
+                            )
                             Text(
                                 formatChangePct(change),
                                 color = palette.muted,
                                 fontSize = 12.sp,
-                                modifier = Modifier.padding(start = 8.dp),
+                                modifier = Modifier.padding(start = 4.dp),
                             )
                         }
                     }
@@ -712,18 +1097,21 @@ private fun CryptoCard(apiStore: ApiStore, settings: SettingsState) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            ApiStatusLine(state)
+            ApiStatusLine(state, onRetry = onRetry, isRetrying = retrying, source = "CoinGecko")
         }
     }
 }
 
 @Composable
-private fun ApodCard(apiStore: ApiStore) {
+private fun ApodCard(apiStore: ApiStore, character: MascotCharacter) {
     val palette = LocalPalette.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var wallpaperStatus by remember { mutableStateOf("") }
-    val flow = remember(apiStore) {
+    var refreshKey by remember { mutableStateOf(0) }
+    val (onRetry, retrying) = rememberApiRetry(apiStore, ApiId.APOD) { refreshKey++ }
+    val resumeKey = homeResumeKey()
+    val flow = remember(apiStore, refreshKey, resumeKey) {
         apiStore.cacheFirstFlow(
             ApiId.APOD,
             ApiCacheKeys.apod(),
@@ -744,7 +1132,8 @@ private fun ApodCard(apiStore: ApiStore) {
             ApiCardHeader("Astronomy picture of the day")
             val apod = state.data
             if (apod == null) {
-                ApiEmptyLine(state, "picture")
+                if (isCardLoading(state)) ApiCardSkeleton()
+                else ApiEmptyState(state, "picture", character)
             } else {
                 if (apod.title.isNotBlank()) {
                     Text(apod.title, color = palette.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -798,7 +1187,7 @@ private fun ApodCard(apiStore: ApiStore) {
                                         true
                                     }.getOrDefault(false)
                                     wallpaperStatus = if (ok) {
-                                        "Set as HavenOS wallpaper ✓"
+                                        "Set as HavenOS wallpaper"
                                     } else {
                                         "Couldn't save the image — try again later."
                                     }
@@ -812,7 +1201,7 @@ private fun ApodCard(apiStore: ApiStore) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            ApiStatusLine(state)
+            ApiStatusLine(state, onRetry = onRetry, isRetrying = retrying, source = "NASA")
         }
     }
 }
@@ -850,10 +1239,13 @@ private fun ApodImage(url: String, isVideo: Boolean) {
 }
 
 @Composable
-private fun GithubCard(apiStore: ApiStore, settings: SettingsState) {
+private fun GithubCard(apiStore: ApiStore, settings: SettingsState, character: MascotCharacter) {
     val palette = LocalPalette.current
     val username = settings.githubUsername.ifBlank { "Voidwalker-28" }
-    val reposFlow = remember(apiStore, username) {
+    var refreshKey by remember { mutableStateOf(0) }
+    val (onRetry, retrying) = rememberApiRetry(apiStore, ApiId.GITHUB) { refreshKey++ }
+    val resumeKey = homeResumeKey()
+    val reposFlow = remember(apiStore, username, refreshKey, resumeKey) {
         apiStore.cacheFirstFlow(
             ApiId.GITHUB,
             ApiCacheKeys.githubRepos(username),
@@ -862,7 +1254,7 @@ private fun GithubCard(apiStore: ApiStore, settings: SettingsState) {
             ApiClient.get(ApiId.GITHUB, ApiEndpoints.githubRepos(username), ApiEndpoints.githubHeaders())
         }.flowOn(Dispatchers.IO)
     }
-    val eventsFlow = remember(apiStore, username) {
+    val eventsFlow = remember(apiStore, username, refreshKey, resumeKey) {
         apiStore.cacheFirstFlow(
             ApiId.GITHUB,
             ApiCacheKeys.githubEvents(username),
@@ -886,7 +1278,8 @@ private fun GithubCard(apiStore: ApiStore, settings: SettingsState) {
             Spacer(Modifier.height(4.dp))
             val repoList = repos.data
             if (repoList.isNullOrEmpty()) {
-                ApiEmptyLine(repos, "repos")
+                if (isCardLoading(repos)) ApiCardSkeleton()
+                else ApiEmptyState(repos, "repos", character)
             } else {
                 for (r in repoList.take(5)) {
                     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
@@ -896,7 +1289,19 @@ private fun GithubCard(apiStore: ApiStore, settings: SettingsState) {
                                 Text(r.description, color = palette.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
-                        Text("★ ${r.stars}", color = palette.muted, fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(start = 8.dp),
+                        ) {
+                            Icon(
+                                HavenIcon.Star.vector(),
+                                contentDescription = null,
+                                tint = palette.muted,
+                                modifier = Modifier.size(12.dp),
+                            )
+                            Spacer(Modifier.width(2.dp))
+                            Text("${r.stars}", color = palette.muted, fontSize = 12.sp)
+                        }
                     }
                 }
             }
@@ -907,7 +1312,8 @@ private fun GithubCard(apiStore: ApiStore, settings: SettingsState) {
             Spacer(Modifier.height(4.dp))
             val eventList = events.data
             if (eventList.isNullOrEmpty()) {
-                ApiEmptyLine(events, "activity")
+                if (isCardLoading(events)) ApiCardSkeleton()
+                else ApiEmptyState(events, "activity", character)
             } else {
                 for (e in eventList.take(5)) {
                     val day = if (e.createdAt.length >= 10) e.createdAt.substring(0, 10) else e.createdAt
@@ -935,13 +1341,26 @@ private fun GithubCard(apiStore: ApiStore, settings: SettingsState) {
             }
             Spacer(Modifier.height(8.dp))
             // Status: the newer of the two rows' updates, offline if either failed.
+            // Combined status: Expired wins (oldest expired row's time),
+            // then Stale, then Fresh; null falls back to the old lines.
+            val expiredMs = listOfNotNull(
+                (repos.cardStatus as? CardStatus.Expired)?.lastUpdatedMs,
+                (events.cardStatus as? CardStatus.Expired)?.lastUpdatedMs,
+            ).minOrNull()
+            val combinedStatus = when {
+                expiredMs != null -> CardStatus.Expired(expiredMs)
+                repos.cardStatus == CardStatus.Stale || events.cardStatus == CardStatus.Stale -> CardStatus.Stale
+                repos.cardStatus == CardStatus.Fresh || events.cardStatus == CardStatus.Fresh -> CardStatus.Fresh
+                else -> null
+            }
             val combined = CachedState(
                 data = if (repos.data != null || events.data != null) Unit else null,
                 isRefreshing = repos.isRefreshing || events.isRefreshing,
                 lastUpdatedMs = maxOf(repos.lastUpdatedMs, events.lastUpdatedMs),
                 isOffline = repos.isOffline || events.isOffline,
+                cardStatus = combinedStatus,
             )
-            ApiStatusLine(combined)
+            ApiStatusLine(combined, onRetry = onRetry, isRetrying = retrying, source = "GitHub")
         }
     }
 }
@@ -957,13 +1376,17 @@ private fun GithubCard(apiStore: ApiStore, settings: SettingsState) {
 @Composable
 fun TodayApiCards(settings: SettingsState?) {
     if (settings == null) return
+    // 3.1.1 (item 2): an unexpectedly failed card refresh disables
+    // the online cards for the session (see rememberApiRetry).
+    if (FeatureSessionState.isDisabled(FeatureId.ONLINE_CARDS)) return
     val context = LocalContext.current
     val apiStore = remember(context) { HavenApp.of(context).apiStore }
+    val character = if (settings.mascotCharacter == 1) MascotCharacter.MILA else MascotCharacter.MILO
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        if (ApiToggles.isEnabled(settings, ApiId.QUOTE)) QuoteCard(apiStore)
-        if (ApiToggles.isEnabled(settings, ApiId.SCORES)) ScoresCard(apiStore)
-        if (ApiToggles.isEnabled(settings, ApiId.CRYPTO)) CryptoCard(apiStore, settings)
-        if (ApiToggles.isEnabled(settings, ApiId.APOD)) ApodCard(apiStore)
-        if (ApiToggles.isEnabled(settings, ApiId.GITHUB)) GithubCard(apiStore, settings)
+        if (ApiToggles.isEnabled(settings, ApiId.QUOTE)) QuoteCard(apiStore, character)
+        if (ApiToggles.isEnabled(settings, ApiId.SCORES)) ScoresCard(apiStore, character)
+        if (ApiToggles.isEnabled(settings, ApiId.CRYPTO)) CryptoCard(apiStore, settings, character)
+        if (ApiToggles.isEnabled(settings, ApiId.APOD)) ApodCard(apiStore, character)
+        if (ApiToggles.isEnabled(settings, ApiId.GITHUB)) GithubCard(apiStore, settings, character)
     }
 }

@@ -34,7 +34,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
@@ -548,7 +547,7 @@ fun OneDock(
                         reduceMotion = reduceMotion,
                     )
                     DockActionButton(
-                        contentDescription = "All apps",
+                        contentDescription = "Library",
                         iconRes = R.drawable.ic_apps,
                         iconSizeDp = 26,
                         onClick = onLibraryClick,
@@ -640,7 +639,7 @@ fun OneDock(
                         reduceMotion = reduceMotion,
                     )
                     DockActionButton(
-                        contentDescription = "All apps",
+                        contentDescription = "Library",
                         iconRes = R.drawable.ic_apps,
                         iconSizeDp = 26,
                         onClick = onLibraryClick,
@@ -760,7 +759,13 @@ private fun DockAppIcon(
     }
 }
 
-/** Search / Library button: 48dp target, icon-only, hover magnify + tooltip. */
+/**
+ * Search / Library button: 48dp target, icon-only, hover magnify +
+ * tooltip. 3.1 A7: the button is a proper icon TILE, not a bare
+ * glyph — the same 14dp tile, surface and hairline border the app
+ * icons beside it use (Phase B's Haven Glass tile replaces these
+ * literals with tokens; the geometry stays).
+ */
 @Composable
 private fun DockActionButton(
     contentDescription: String,
@@ -778,12 +783,14 @@ private fun DockActionButton(
         animationSpec = if (reduceMotion) snap() else spring(),
         label = "dockButtonHoverMagnify",
     )
+    val tileShape = RoundedCornerShape(14.dp)
     Box(
         Modifier
             .size(DOCK_ICON_DP.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(CircleShape)
-            .background(palette.surface.copy(alpha = 0.55f))
+            .clip(tileShape)
+            .background(palette.surface)
+            .border(1.dp, palette.glassBorder, tileShape)
             .hoverable(interaction)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         contentAlignment = Alignment.Center,

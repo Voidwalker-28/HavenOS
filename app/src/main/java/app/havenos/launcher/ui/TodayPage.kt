@@ -31,9 +31,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.Icon
 import app.havenos.launcher.data.AppEntry
 import app.havenos.launcher.data.AppRepository
 import app.havenos.launcher.theme.GlassSurface
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.vector
 import app.havenos.launcher.theme.LocalPalette
 
 /**
@@ -159,9 +162,8 @@ fun HomePageIndicator(
                 val current = p == currentPage
                 val isToday = todayOn && p == 0
                 if (isToday) {
-                    // Sun glyph: U+2600, no emoji presentation selector,
-                    // so it renders as a text glyph in the accent/muted
-                    // colour rather than a colour emoji.
+                    // 3.1 Phase B4: the Today dot is a sun icon, not a
+                    // text glyph, in the accent/muted colour.
                     Box(
                         Modifier
                             .size(24.dp)
@@ -171,11 +173,12 @@ fun HomePageIndicator(
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            "☀",
-                            color = if (current) palette.accent
+                        Icon(
+                            HavenIcon.WeatherSun.vector(),
+                            contentDescription = "Today",
+                            tint = if (current) palette.accent
                             else palette.onSurface.copy(alpha = 0.4f),
-                            fontSize = 12.sp,
+                            modifier = Modifier.size(14.dp),
                         )
                     }
                 } else {

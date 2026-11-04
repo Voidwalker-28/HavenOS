@@ -15,6 +15,8 @@ import android.os.Process
 import android.provider.Settings as AndroidSettings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,17 +24,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -52,7 +60,19 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import app.havenos.launcher.HavenApp
 import app.havenos.launcher.HavenDeviceAdminReceiver
+import app.havenos.launcher.theme.LocalAccentRoles
+import app.havenos.launcher.theme.LocalPalette
+import app.havenos.launcher.ui.glass.HavenBanner
+import app.havenos.launcher.ui.lastCrashShareText
+import app.havenos.launcher.ui.readFeatureErrors
+import app.havenos.launcher.ui.glass.HavenDialog
+import app.havenos.launcher.ui.glass.HavenHelp
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconTile
+import app.havenos.launcher.ui.glass.HavenSwitch
+import app.havenos.launcher.ui.glass.vector
 import app.havenos.launcher.data.applyBackupJson
+import app.havenos.launcher.data.network.ApiDiagnosticsRow
 import app.havenos.launcher.data.applyLayoutSnapshot
 import app.havenos.launcher.data.backupSummary
 import app.havenos.launcher.data.buildBackupJson
@@ -371,7 +391,7 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
     var newProfileName by remember { mutableStateOf("") }
     var profileMsg by remember { mutableStateOf<String?>(null) }
     var showAdvanced by remember { mutableStateOf(false) }
-    var helpFor by remember { mutableStateOf<String?>(null) }
+    // 3.1 Phase C: inline help expansions replaced by HavenHelp popovers; no helpFor state.
     var licensesOpen by remember { mutableStateOf(false) }
     var copiedWhat by remember { mutableStateOf<String?>(null) }
 
@@ -423,45 +443,29 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("‹ Back") }
-            Text("Device & Data", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-        }
-        Spacer(Modifier.height(12.dp))
 
-        // Default launcher card: banner form only while NOT default.
+        // Default launcher banner form only while NOT default.
         if (!status.home) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Default launcher", fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    Text(
-                        "HavenOS is not the default launcher.",
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = {
-                        onSpotlight("defaultLauncher")
-                        requestHomeRole()
-                    }) { Text("Make default") }
-                }
-            }
+            HavenBanner(
+                icon = HavenIcon.Home,
+                text = "Default launcher\nHavenOS is not the default launcher.",
+                actionLabel = "Make default",
+                onAction = {
+                    onSpotlight("defaultLauncher")
+                    requestHomeRole()
+                },
+            )
         } else {
             DeviceValueRow(title = "Default launcher", value = "HavenOS")
         }
 
         Spacer(Modifier.height(16.dp))
         DeviceSectionLabel("Permissions")
-        // Compact rows: glyph + name + purpose (≤6 words) + dot + text + chip.
+        // Compact rows: icon + name + purpose (≤6 words) + dot + text + chip.
         DevicePermRow(
-            glyph = "📅", title = "Calendar", purpose = "Shows events in widgets, search",
+            icon = HavenIcon.PermCalendar, title = "Calendar", purpose = "Shows events in widgets, search",
             granted = status.calendar,
-            help = null, helpOpen = false, onHelp = {},
+            help = null,
             chipLabel = if (status.calendar) "Manage" else if (deniedCalendar) "Settings" else "Allow",
             onChip = {
                 if (status.calendar || deniedCalendar) openAppInfo()
@@ -469,9 +473,9 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             },
         )
         DevicePermRow(
-            glyph = "👥", title = "Contacts", purpose = "Finds contacts in drawer search",
+            icon = HavenIcon.PermContacts, title = "Contacts", purpose = "Finds contacts in drawer search",
             granted = status.contacts,
-            help = null, helpOpen = false, onHelp = {},
+            help = null,
             chipLabel = if (status.contacts) "Manage" else if (deniedContacts) "Settings" else "Allow",
             onChip = {
                 if (status.contacts || deniedContacts) openAppInfo()
@@ -479,34 +483,32 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             },
         )
         DevicePermRow(
-            glyph = "🔔", title = "Notification access", purpose = "Powers badges, Now Playing",
+            icon = HavenIcon.PermNotifications, title = "Notification access", purpose = "Powers badges, Now Playing",
             granted = status.notif,
-            help = null, helpOpen = false, onHelp = {},
+            help = null,
             chipLabel = if (status.notif) "Manage" else "Allow",
             onChip = {
                 startSystem(Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             },
         )
         DevicePermRow(
-            glyph = "📊", title = "Usage access", purpose = "Powers optional app suggestions",
+            icon = HavenIcon.PermUsage, title = "Usage access", purpose = "Powers optional app suggestions",
             granted = status.usage,
-            help = null, helpOpen = false, onHelp = {},
+            help = null,
             chipLabel = if (status.usage) "Manage" else "Allow",
             onChip = { startSystem(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) },
         )
         DevicePermRow(
-            glyph = "♿", title = "Accessibility", purpose = "Powers navigation edge gestures",
+            icon = HavenIcon.PermAccessibility, title = "Accessibility", purpose = "Powers navigation edge gestures",
             granted = status.a11y,
             help = "System screen only — never enabled automatically.",
-            helpOpen = helpFor == "a11y",
-            onHelp = { helpFor = if (helpFor == "a11y") null else "a11y" },
             chipLabel = if (status.a11y) "Manage" else "Allow",
             onChip = { startSystem(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)) },
         )
         DevicePermRow(
-            glyph = "▣", title = "Draw over apps", purpose = "Lets gesture strips overlay apps",
+            icon = HavenIcon.PermOverlay, title = "Draw over apps", purpose = "Lets gesture strips overlay apps",
             granted = status.overlay,
-            help = null, helpOpen = false, onHelp = {},
+            help = null,
             chipLabel = if (status.overlay) "Manage" else "Allow",
             onChip = {
                 startSystem(
@@ -518,11 +520,9 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
             },
         )
         DevicePermRow(
-            glyph = "🔒", title = "Device admin", purpose = "Lets lock turn screen off",
+            icon = HavenIcon.PermDeviceAdmin, title = "Device admin", purpose = "Lets lock turn screen off",
             granted = status.admin,
             help = "System screen only — never enabled automatically.",
-            helpOpen = helpFor == "admin",
-            onHelp = { helpFor = if (helpFor == "admin") null else "admin" },
             chipLabel = if (status.admin) "Manage" else "Allow",
             onChip = {
                 if (status.admin) {
@@ -618,8 +618,6 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                 enabled = true,
                 reason = null,
                 help = "Daily backups include wallpaper choice.",
-                helpOpen = helpFor == "includeWp",
-                onHelp = { helpFor = if (helpFor == "includeWp") null else "includeWp" },
                 onChange = { scope.launch { settings.setBackupIncludeWp(it) } },
             )
             DeviceValueRow(title = "Auto backup", value = autoBackupText)
@@ -754,6 +752,134 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                     Text("Copied.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
 
+                // 3.1.1 (item 3): last crash, local only — class,
+                // message, time, versionCode, with user-triggered
+                // Copy/Share (nothing is uploaded automatically).
+                // Feature errors (item 2) live in their own section
+                // below; this is only truly uncaught crashes.
+                DeviceSectionLabel("Last crash")
+                val lastCrash = remember { app.readLastCrash() }
+                if (lastCrash == null) {
+                    Text(
+                        "No crash recorded.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "${lastCrash.clazz}\n${lastCrash.message}\n" +
+                            "${lastCrash.timeText} · versionCode ${lastCrash.versionCode}",
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    Row {
+                        TextButton(onClick = {
+                            try {
+                                val cm = context.getSystemService(ClipboardManager::class.java)
+                                cm?.setPrimaryClip(
+                                    ClipData.newPlainText(
+                                        "HavenOS last crash",
+                                        lastCrashShareText(app),
+                                    ),
+                                )
+                                copiedWhat = "Last crash"
+                            } catch (t: Throwable) {
+                                copiedWhat = null
+                            }
+                        }) { Text("Copy") }
+                        TextButton(onClick = {
+                            try {
+                                val shareText = lastCrashShareText(app) ?: return@TextButton
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, shareText)
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(
+                                    Intent.createChooser(intent, "Share last crash")
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            } catch (t: Throwable) {
+                            }
+                        }) { Text("Share") }
+                    }
+                    if (copiedWhat == "Last crash") {
+                        Text("Copied.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
+                // 3.1.1 (item 2): feature errors — soft failures that
+                // disabled one feature for the session (never crashes).
+                DeviceSectionLabel("Feature errors")
+                val featureErrors = remember { readFeatureErrors(context) }
+                if (featureErrors.isEmpty()) {
+                    Text(
+                        "No feature errors recorded.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    for (err in featureErrors) {
+                        Text(
+                            "${err.feature}: ${err.clazz} · ${err.message}",
+                            fontSize = 13.sp,
+                        )
+                        if (err.frames.isNotBlank()) {
+                            Text(
+                                err.frames,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
+                // 3.1 A2: per-API last-result rows — class, HTTP
+                // code, time, and the first 200 chars of the body
+                // for parse errors only (the store never records a
+                // snippet otherwise, and keys travel in headers, so
+                // no key/token/personal data can appear here).
+                // Loaded when Advanced opens; a row exists only
+                // after that API attempted a refresh.
+                var apiDiags by remember { mutableStateOf<List<ApiDiagnosticsRow>>(emptyList()) }
+                val diagTimeFmt = remember {
+                    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                }
+                LaunchedEffect(Unit) {
+                    apiDiags = try {
+                        app.apiStore.allDiagnostics()
+                    } catch (t: Throwable) {
+                        emptyList()
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                DeviceSectionLabel("API diagnostics")
+                if (apiDiags.isEmpty()) {
+                    Text(
+                        "No API results recorded yet.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    for (row in apiDiags) {
+                        Text(
+                            row.api + ": " + row.resultClass +
+                                (if (row.httpCode >= 0) " · HTTP " + row.httpCode else "") +
+                                " · " + diagTimeFmt.format(java.util.Date(row.timeMs)),
+                            fontSize = 13.sp,
+                        )
+                        if (row.bodySnippet.isNotBlank()) {
+                            Text(
+                                row.bodySnippet,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(16.dp))
                 DeviceSectionLabel("Developer options")
                 Text(
@@ -774,8 +900,6 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                     enabled = status.hideBar,
                     reason = navBarReason,
                     help = "Hides the button bar in every app.",
-                    helpOpen = helpFor == "navHideBar",
-                    onHelp = { helpFor = if (helpFor == "navHideBar") null else "navHideBar" },
                     onChange = {
                         onSpotlight("navHideBar")
                         scope.launch {
@@ -817,100 +941,73 @@ fun DeviceDataHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
     // One-sentence reason, then the real system prompt — point of use only.
     if (rationaleFor != null) {
         val isCalendar = rationaleFor == "calendar"
-        AlertDialog(
-            onDismissRequest = { rationaleFor = null },
-            title = { Text("Allow this permission?", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    if (isCalendar) {
-                        "HavenOS shows your events in widgets and search."
-                    } else {
-                        "HavenOS finds contacts from drawer search."
-                    },
-                    fontSize = 14.sp,
-                )
+        HavenDialog(
+            onDismiss = { rationaleFor = null },
+            title = "Allow this permission?",
+            body = if (isCalendar) {
+                "HavenOS shows your events in widgets and search."
+            } else {
+                "HavenOS finds contacts from drawer search."
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    rationaleFor = null
-                    if (isCalendar) calLauncher.launch(Manifest.permission.READ_CALENDAR)
-                    else contactsLauncher.launch(Manifest.permission.READ_CONTACTS)
-                }) { Text("Allow") }
-            },
-            dismissButton = {
-                TextButton(onClick = { rationaleFor = null }) { Text("Not now") }
+            dismissLabel = "Not now",
+            confirmLabel = "Allow",
+            onConfirm = {
+                rationaleFor = null
+                if (isCalendar) calLauncher.launch(Manifest.permission.READ_CALENDAR)
+                else contactsLauncher.launch(Manifest.permission.READ_CONTACTS)
             },
         )
     }
 
     // Import confirm: count shown BEFORE anything is applied.
     if (importSummary != null && importText != null) {
-        AlertDialog(
-            onDismissRequest = {
+        HavenDialog(
+            onDismiss = {
                 importSummary = null; importText = null; importChanged = null
             },
-            title = { Text("Import backup?", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    "${importChanged ?: 0} ${if (importChanged == 1) "setting" else "settings"} " +
-                        "will change. " + importSummary!!,
-                    fontSize = 14.sp,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val text = importText!!
-                    importSummary = null; importText = null; importChanged = null
-                    scope.launch {
-                        // Snapshot the pre-import layout first; the same
-                        // write also happens inside applyBackupJson.
-                        val items = app.db.homeItems().all()
-                        val folders = app.db.folders().all()
-                        settings.setUndoJson(layoutSnapshotJson(items, folders, state))
-                        val ok = applyBackupJson(app, text)
-                        if (ok) syncNavBarPolicy(context, settings)
-                        setBackupFailedFlag(context, !ok)
-                        showImportUndo = ok
-                        resultMsg = if (ok) {
-                            "Backup applied."
-                        } else {
-                            "Backup could not be applied."
-                        }
+            title = "Import backup?",
+            body = "${importChanged ?: 0} ${if (importChanged == 1) "setting" else "settings"} " +
+                "will change. " + importSummary!!,
+            dismissLabel = "Cancel",
+            confirmLabel = "Apply",
+            onConfirm = {
+                val text = importText!!
+                importSummary = null; importText = null; importChanged = null
+                scope.launch {
+                    // Snapshot the pre-import layout first; the same
+                    // write also happens inside applyBackupJson.
+                    val items = app.db.homeItems().all()
+                    val folders = app.db.folders().all()
+                    settings.setUndoJson(layoutSnapshotJson(items, folders, state))
+                    val ok = applyBackupJson(app, text)
+                    if (ok) syncNavBarPolicy(context, settings)
+                    setBackupFailedFlag(context, !ok)
+                    showImportUndo = ok
+                    resultMsg = if (ok) {
+                        "Backup applied."
+                    } else {
+                        "Backup could not be applied."
                     }
-                }) { Text("Apply") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    importSummary = null; importText = null; importChanged = null
-                }) { Text("Cancel") }
+                }
             },
         )
     }
     if (importError != null) {
-        AlertDialog(
-            onDismissRequest = { importError = null },
-            title = { Text("Import backup", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
-            text = { Text(importError!!, fontSize = 14.sp) },
-            confirmButton = {
-                TextButton(onClick = { importError = null }) { Text("OK") }
-            },
+        HavenDialog(
+            onDismiss = { importError = null },
+            title = "Import backup",
+            body = importError!!,
+            dismissLabel = "OK",
         )
     }
     if (licensesOpen) {
-        AlertDialog(
-            onDismissRequest = { licensesOpen = false },
-            title = { Text("Open-source licenses", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    "AndroidX Compose, Room and DataStore — Apache License 2.0\n" +
-                        "Kotlin — Apache License 2.0\n" +
-                        "Weather data by Open-Meteo.com — CC BY 4.0",
-                    fontSize = 13.sp,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { licensesOpen = false }) { Text("Close") }
-            },
+        HavenDialog(
+            onDismiss = { licensesOpen = false },
+            title = "Open-source licenses",
+            body = "AndroidX Compose, Room and DataStore — Apache License 2.0\n" +
+                "Kotlin — Apache License 2.0\n" +
+                "Weather data by Open-Meteo.com — CC BY 4.0",
+            dismissLabel = "Close",
         )
     }
 }
@@ -961,55 +1058,48 @@ private fun DeviceActionRow(
     }
 }
 
-/** Compact permission row: glyph + name + purpose + dot + text + chip. */
+/** Permission row: icon tile + name + purpose + status chip + Manage action. */
 @Composable
 private fun DevicePermRow(
-    glyph: String,
+    icon: HavenIcon,
     title: String,
     purpose: String,
     granted: Boolean,
     help: String?,
-    helpOpen: Boolean,
-    onHelp: () -> Unit,
     chipLabel: String,
     onChip: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.heightIn(min = 56.dp),
-        ) {
-            Text(glyph, fontSize = 20.sp, modifier = Modifier.padding(end = 12.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    if (help != null) {
-                        TextButton(onClick = onHelp) { Text("ⓘ", fontSize = 14.sp) }
-                    }
-                }
-                Text(purpose, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val roles = LocalAccentRoles.current
+    val palette = LocalPalette.current
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(vertical = 2.dp),
+    ) {
+        HavenIconTile(icon, null)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                if (help != null) HavenHelp(helpText = help)
             }
-            Text(
-                if (granted) "●" else "○",
-                fontSize = 14.sp,
-                color = if (granted) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                modifier = Modifier.padding(end = 4.dp),
-            )
+            Text(purpose, fontSize = 13.sp, color = palette.muted)
+        }
+        Box(
+            Modifier.clip(RoundedCornerShape(percent = 50))
+                .background(
+                    if (granted) Color(roles.accentContainer)
+                    else palette.onSurface.copy(alpha = 0.08f),
+                )
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        ) {
             Text(
                 if (granted) "Allowed" else "Not allowed",
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(end = 4.dp),
+                fontSize = 12.sp,
+                color = if (granted) Color(roles.accent) else palette.muted,
             )
-            TextButton(onClick = onChip) { Text(chipLabel) }
         }
-        if (helpOpen && help != null) {
-            Text(help, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        Spacer(Modifier.width(8.dp))
+        TextButton(onClick = onChip) { Text(chipLabel) }
     }
 }
 
@@ -1021,8 +1111,6 @@ private fun DeviceSwitchRow(
     enabled: Boolean,
     reason: String?,
     help: String?,
-    helpOpen: Boolean,
-    onHelp: () -> Unit,
     onChange: (Boolean) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -1033,9 +1121,7 @@ private fun DeviceSwitchRow(
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    if (help != null) {
-                        TextButton(onClick = onHelp) { Text("ⓘ", fontSize = 14.sp) }
-                    }
+                    if (help != null) HavenHelp(helpText = help)
                 }
                 if (reason != null) {
                     Text(reason, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1047,10 +1133,7 @@ private fun DeviceSwitchRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(end = 8.dp),
             )
-            Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
-        }
-        if (helpOpen && help != null) {
-            Text(help, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            HavenSwitch(checked = checked, enabled = enabled, onChange = onChange)
         }
     }
 }

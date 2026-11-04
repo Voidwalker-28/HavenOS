@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
@@ -59,6 +58,9 @@ import app.havenos.launcher.data.parseCatNames
 import app.havenos.launcher.data.parseMembers
 import app.havenos.launcher.ui.CATEGORY_NAMES
 import app.havenos.launcher.ui.LibraryView
+import app.havenos.launcher.ui.glass.HavenDialogFilledButton
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenHelp
 import kotlinx.coroutines.launch
 import app.havenos.launcher.ui.settings.shell.SearchEntry
 
@@ -70,17 +72,6 @@ import app.havenos.launcher.ui.settings.shell.SearchEntry
 // Titles stay short, values live on the right, help hides behind a tap.
 // ---------------------------------------------------------------------------
 
-@Composable
-internal fun DsTopBar(onBack: () -> Unit, title: String) {
-    Row(
-        Modifier.fillMaxWidth().padding(16.dp, 12.dp, 16.dp, 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TextButton(onClick = onBack) { Text("‹ Back", fontSize = 16.sp) }
-        Spacer(Modifier.width(4.dp))
-        Text(title, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
 
 @Composable
 internal fun DsSection(text: String) {
@@ -95,15 +86,7 @@ internal fun DsSection(text: String) {
 @Composable
 internal fun HelpButton(help: String?) {
     if (help == null) return
-    var open by remember { mutableStateOf(false) }
-    TextButton(onClick = { open = true }) { Text("ⓘ", fontSize = 16.sp) }
-    if (open) {
-        AlertDialog(
-            onDismissRequest = { open = false },
-            text = { Text(help) },
-            confirmButton = { TextButton(onClick = { open = false }) { Text("OK") } },
-        )
-    }
+    HavenHelp(helpText = help)
 }
 
 @Composable
@@ -456,7 +439,6 @@ fun DrawerSearchHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
     }
 
     LazyColumn(Modifier.fillMaxSize()) {
-        item { DsTopBar(onBack, "Drawer & search") }
 
         item { DsSection("Drawer style") }
         item {
@@ -682,14 +664,12 @@ fun DrawerSearchHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
         var text by remember(id) {
             mutableStateOf(catNames[id] ?: CATEGORY_NAMES[id] ?: id)
         }
-        AlertDialog(
-            onDismissRequest = { renameTarget = null },
-            title = { Text("Rename category") },
-            text = {
-                TextField(value = text, onValueChange = { text = it }, singleLine = true)
-            },
-            confirmButton = {
-                TextButton(onClick = {
+        HavenGlassDialog(
+            onDismiss = { renameTarget = null },
+            title = "Rename category",
+            buttons = {
+                TextButton(onClick = { renameTarget = null }) { Text("Cancel") }
+                HavenDialogFilledButton(label = "Save", onClick = {
                     scope.launch {
                         val next = parseCatNames(state.catNamesJson).toMutableMap()
                         if (text.isBlank() || text == CATEGORY_NAMES[id]) next.remove(id)
@@ -699,10 +679,10 @@ fun DrawerSearchHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
                         )
                     }
                     renameTarget = null
-                }) { Text("Save") }
+                })
             },
-            dismissButton = {
-                TextButton(onClick = { renameTarget = null }) { Text("Cancel") }
+            content = {
+                TextField(value = text, onValueChange = { text = it }, singleLine = true)
             },
         )
     }
@@ -710,51 +690,49 @@ fun DrawerSearchHubScreen(onBack: () -> Unit, onSpotlight: (String) -> Unit) {
     // Merge dialog: pick a target, or unmerge.
     mergeTarget?.let { id ->
         val targets = CATEGORY_NAMES.keys.filter { it != id }.sorted()
-        AlertDialog(
-            onDismissRequest = { mergeTarget = null },
-            title = { Text("Merge category") },
-            text = {
-                Column {
-                    if (catMerges[id] != null) {
-                        TextButton(onClick = {
+        HavenGlassDialog(
+            onDismiss = { mergeTarget = null },
+            title = "Merge category",
+            buttons = {
+                TextButton(onClick = { mergeTarget = null }) { Text("Close") }
+            },
+            content = {
+                if (catMerges[id] != null) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            val next = parseCatMerges(state.catMergeJson).toMutableMap()
+                            next.remove(id)
+                            settings.setCatMergeJson(encodeCatMerges(next))
+                        }
+                        mergeTarget = null
+                    }) { Text("Unmerge") }
+                }
+                targets.forEach { target ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
                             scope.launch {
                                 val next = parseCatMerges(state.catMergeJson).toMutableMap()
-                                next.remove(id)
+                                next[id] = target
                                 settings.setCatMergeJson(encodeCatMerges(next))
                             }
                             mergeTarget = null
-                        }) { Text("Unmerge") }
-                    }
-                    targets.forEach { target ->
-                        Row(
-                            Modifier.fillMaxWidth().clickable {
+                        }.padding(0.dp, 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = catMerges[id] == target,
+                            onClick = {
                                 scope.launch {
                                     val next = parseCatMerges(state.catMergeJson).toMutableMap()
                                     next[id] = target
                                     settings.setCatMergeJson(encodeCatMerges(next))
                                 }
                                 mergeTarget = null
-                            }.padding(0.dp, 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(
-                                selected = catMerges[id] == target,
-                                onClick = {
-                                    scope.launch {
-                                        val next = parseCatMerges(state.catMergeJson).toMutableMap()
-                                        next[id] = target
-                                        settings.setCatMergeJson(encodeCatMerges(next))
-                                    }
-                                    mergeTarget = null
-                                },
-                            )
-                            Text(catNames[target] ?: CATEGORY_NAMES[target] ?: target)
-                        }
+                            },
+                        )
+                        Text(catNames[target] ?: CATEGORY_NAMES[target] ?: target)
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { mergeTarget = null }) { Text("Close") }
             },
         )
     }

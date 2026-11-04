@@ -40,6 +40,8 @@ import android.text.format.DateFormat
 import app.havenos.launcher.data.AppEntry
 import app.havenos.launcher.data.AppRepository
 import app.havenos.launcher.theme.LocalPalette
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
 import app.havenos.launcher.theme.LocalState
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -159,6 +161,17 @@ private fun RailActionButton(label: String, onClick: () -> Unit, modifier: Modif
     }
 }
 
+/**
+ * 3.1 A6: the rail's scroll-content bottom inset. A bottom dock's
+ * pill occupies the shell below the rail, so the last card must
+ * scroll [dockHeightDp] + 16dp clear of the rail's bottom edge;
+ * side docks sit outside the rail column, so they need no inset.
+ * Pure (Dp-free) so the rule is unit-tested; the composable below
+ * applies it in Dp.
+ */
+fun railBottomInsetDp(dockHeightDp: Float, isBottomDock: Boolean): Float =
+    if (isBottomDock) dockHeightDp + 16f else 0f
+
 // ---------------------------------------------------------------------------
 // Expanded landscape: the rail itself (scrollable, padded)
 // ---------------------------------------------------------------------------
@@ -178,11 +191,15 @@ fun TodayRail(
     onEnterCalm: () -> Unit,
     modifier: Modifier = Modifier,
     settings: app.havenos.launcher.data.SettingsState? = null,
+    // 3.1 A6: bottom scroll inset (dock height + 16dp for a bottom
+    // dock, 0 otherwise — see railBottomInsetDp). The host computes
+    // it from the dock side; the rail only applies it.
+    bottomInset: androidx.compose.ui.unit.Dp = 0.dp,
 ) {
     Column(
         modifier
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 16.dp),
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp + bottomInset),
     ) {
         TodayRailContent(
             weather = weather,
@@ -276,10 +293,11 @@ fun MediumTodayStrip(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Text(
-                if (expanded) "⌃" else "⌄",
-                color = palette.onSurface.copy(alpha = 0.7f),
-                fontSize = 16.sp,
+            HavenIconImage(
+                if (expanded) HavenIcon.ArrowUp else HavenIcon.ArrowDown,
+                if (expanded) "Collapse" else "Expand",
+                tint = palette.onSurface.copy(alpha = 0.7f),
+                size = 16.dp,
             )
         }
         AnimatedVisibility(visible = expanded, enter = enter, exit = exit) {

@@ -5,12 +5,13 @@ its docs, and its Releases never drift apart.
 
 ## Version convention
 
-- `versionName` stays `1.0` across the v1 line.
-- `versionCode` increments by 1 per release (10 for v1.0, 11 for the
-  next, and so on), so builds stay distinguishable by file name and by
-  install.
-- Tags are `v1.0`, `v1.1`, … — the tag marks the release commit; the
-  `versionCode` is what distinguishes builds.
+- `versionName` marks the major line (1.0, 2.0, 3.0, 3.1, 3.1.1, …).
+- `versionCode` increments by 1 per release (10 for v1.0, 11 for 2.0,
+  12 for 3.0, 13 for 3.1, 14 for 3.1.1, and so on), so builds stay
+  distinguishable by file name and by install.
+- Tags are `vX.Y` or `vX.Y.Z` matching the `versionName` (e.g.
+  `v3.1.1`) — the tag marks the release commit; the `versionCode` is
+  what distinguishes builds.
 
 ## Release checklist (every version)
 
@@ -27,7 +28,7 @@ its docs, and its Releases never drift apart.
    byte size, and md5.
 6. **Rename.** Rename the built APK to `HavenOS-vc<versionCode>.apk`
    before publishing.
-7. **Tag.** `git tag vX.Y && git push origin vX.Y`.
+7. **Tag.** `git tag vX.Y.Z && git push origin vX.Y.Z`.
 8. **GitHub Release.** Create a Release named after the tag with the
    APK attached and release notes matching the CHANGELOG entry. The APK
    goes on the Release, never into the repository tree.

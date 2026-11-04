@@ -28,6 +28,23 @@ data class CachedState<T>(
     val isOffline: Boolean,
     /** Last refresh returned 404 (dictionary: word not found). Not an error state. */
     val notFound: Boolean = false,
+    /**
+     * Coordination fix §7: age-derived status (Fresh/Stale/Expired/
+     * EmptyOffline), or null until the first row is read (initial
+     * states render the old fallback lines). The worker failure
+     * counter never drives this — age ratio alone does.
+     */
+    val cardStatus: CardStatus? = null,
+    /**
+     * 3.1 A2: the class of the last refresh outcome in THIS flow
+     * lifetime, or null when the last refresh succeeded (or none has
+     * run yet). The card renders A2 states from this first, and falls
+     * back to [cardStatus] when it is null. A fresh cache row implies
+     * a recent success, so a null initial value is correct in every
+     * path: a stale row always triggers a refresh on collect, and a
+     * parse failure on a fresh body forces one too.
+     */
+    val failureClass: ApiFailureClass? = null,
 )
 
 /** Toggle gating: the single place that maps an API to its Settings flag. */
@@ -57,7 +74,57 @@ fun lastUpdatedLabel(lastUpdatedMs: Long): String {
 fun offlineLabel(hasCachedData: Boolean): String =
     if (hasCachedData) "Offline — showing saved data" else "Offline — no saved data yet"
 
-class ApiStore(private val dao: ApiCacheDao) {
+class ApiStore(
+    private val dao: ApiCacheDao,
+    private val diagnosticsDao: ApiDiagnosticsDao? = null,
+    /**
+     * 3.1 A2: read at fetch time, so a network change between
+     * opens is honored. Production passes the
+     * ConnectivityManager validated-network check; tests pass a
+     * fixed lambda. Defaults to true (validated) so existing
+     * constructions without a network check keep the old
+     * transport-failure behavior.
+     */
+    private val hasValidatedInternet: () -> Boolean = { true },
+) {
+
+    /**
+     * 3.1 A2: record one Diagnostics row per API outcome. Success
+     * clears the failure class (stored as "SUCCESS", HTTP 200).
+     * Body snippets are recorded for parse errors only, capped at
+     * 200 chars, and never contain request credentials (keys travel
+     * in headers, never in bodies). Best-effort: a diagnostics
+     * write failure must never fail the card refresh itself.
+     */
+    private suspend fun recordDiagnostic(
+        api: ApiId,
+        resultClass: String,
+        httpCode: Int,
+        bodySnippet: String = "",
+    ) {
+        val dao = diagnosticsDao ?: return
+        try {
+            dao.upsert(
+                ApiDiagnosticsRow(
+                    api = api.name,
+                    resultClass = resultClass,
+                    httpCode = httpCode,
+                    timeMs = System.currentTimeMillis(),
+                    bodySnippet = bodySnippet.take(200),
+                ),
+            )
+        } catch (t: Throwable) {
+            // Diagnostics must never break a refresh.
+        }
+    }
+
+    /** 3.1 A2: all Diagnostics rows, for the Device & Data hub. Empty when no fetch has run. */
+    suspend fun allDiagnostics(): List<ApiDiagnosticsRow> =
+        try {
+            diagnosticsDao?.all().orEmpty()
+        } catch (t: Throwable) {
+            emptyList()
+        }
 
     /**
      * Cache-first flow for one cache [key]. [parse] converts the raw
@@ -75,13 +142,23 @@ class ApiStore(private val dao: ApiCacheDao) {
         var row = dao.get(key)
         var data = row?.json?.let { runCatching { parse(it) }.getOrNull() }
         var lastUpdated = row?.updatedAtMs ?: 0L
-        emit(CachedState(data = data, isRefreshing = false, lastUpdatedMs = lastUpdated, isOffline = false))
+        emit(
+            CachedState(
+                data = data, isRefreshing = false, lastUpdatedMs = lastUpdated, isOffline = false,
+                cardStatus = cardStatus(api, row, System.currentTimeMillis()),
+            ),
+        )
         // A row that no longer parses is stale even when fresh: a
         // worker may have stored an unparseable 200 body (shape
         // change), and that row must not block refetch until max age.
         val unparseableRow = row != null && data == null
         if (!unparseableRow && !ApiCachePolicy.isStale(api, row, System.currentTimeMillis())) return@flow
-        emit(CachedState(data = data, isRefreshing = true, lastUpdatedMs = lastUpdated, isOffline = false))
+        emit(
+            CachedState(
+                data = data, isRefreshing = true, lastUpdatedMs = lastUpdated, isOffline = false,
+                cardStatus = cardStatus(api, row, System.currentTimeMillis()),
+            ),
+        )
         when (val result = runCatching { fetch() }.getOrElse { ApiResult.Failure(ApiErrorKind.OFFLINE) }) {
             is ApiResult.Success -> {
                 // Parse BEFORE upserting: an unparseable 200 body must
@@ -92,12 +169,33 @@ class ApiStore(private val dao: ApiCacheDao) {
                 if (parsed != null) {
                     val now = System.currentTimeMillis()
                     dao.upsert(ApiCacheRow(key, result.body, now))
-                    emit(CachedState(data = parsed, isRefreshing = false, lastUpdatedMs = now, isOffline = false))
+                    recordDiagnostic(api, "SUCCESS", 200)
+                    emit(
+                        CachedState(
+                            data = parsed, isRefreshing = false, lastUpdatedMs = now, isOffline = false,
+                            cardStatus = CardStatus.Fresh,
+                            failureClass = null,
+                        ),
+                    )
                 } else {
-                    emit(CachedState(data = data, isRefreshing = false, lastUpdatedMs = lastUpdated, isOffline = false))
+                    // 3.1 A2: a 200 body that does not match the
+                    // expected shape is a ParseError, never Offline.
+                    // The snippet lets the developer confirm the live
+                    // shape on a real network.
+                    recordDiagnostic(api, ApiFailureClass.PARSE_ERROR.name, 200, result.body)
+                    emit(
+                        CachedState(
+                            data = data, isRefreshing = false, lastUpdatedMs = lastUpdated, isOffline = false,
+                            cardStatus = cardStatus(api, row, System.currentTimeMillis()),
+                            failureClass = ApiFailureClass.PARSE_ERROR,
+                        ),
+                    )
                 }
             }
             is ApiResult.Failure -> {
+                val failureClass =
+                    classifyFailure(result.kind, result.httpCode, hasValidatedInternet())
+                recordDiagnostic(api, failureClass.name, result.httpCode)
                 emit(
                     CachedState(
                         data = data,
@@ -105,6 +203,8 @@ class ApiStore(private val dao: ApiCacheDao) {
                         lastUpdatedMs = lastUpdated,
                         isOffline = result.kind != ApiErrorKind.NOT_FOUND,
                         notFound = result.kind == ApiErrorKind.NOT_FOUND,
+                        cardStatus = cardStatus(api, row, System.currentTimeMillis()),
+                        failureClass = failureClass,
                     ),
                 )
             }
@@ -128,8 +228,14 @@ class ApiStore(private val dao: ApiCacheDao) {
      * Worker path: refresh one API's cache row(s) from [state].
      * Returns false when the API is toggled off or has nothing it can
      * fetch (CoinGecko with no Demo key set; dictionary, which has no
-     * periodic refresh). Never throws; a failed fetch leaves the old
-     * cache row untouched.
+     * periodic refresh). Never throws. Success upserts a fresh row
+     * (failure counter reset to 0 by the default); a failed fetch
+     * keeps the old payload and timestamp and bumps ONLY
+     * consecutiveFailures (§7, diagnostics only — the card status
+     * line is driven by cache age, not by this counter). No row →
+     * nothing to bump (EmptyOffline stays row-less). Toggle-off and
+     * no-key gates return before any row is touched, so they are
+     * never counted as fetch failures.
      */
     suspend fun refreshApi(api: ApiId, state: SettingsState): Boolean {
         if (!ApiToggles.isEnabled(state, api)) return false
@@ -137,7 +243,20 @@ class ApiStore(private val dao: ApiCacheDao) {
         suspend fun store(key: String, result: ApiResult): Boolean {
             if (result is ApiResult.Success) {
                 dao.upsert(ApiCacheRow(key, result.body, now))
+                recordDiagnostic(api, "SUCCESS", 200)
                 return true
+            }
+            // Success returned above; the sealed result has no other
+            // subtype, so a non-Failure here can only mean a future
+            // subtype — fail closed (keep cache, no diagnostic write
+            // for a shape we do not understand).
+            val failure = result as? ApiResult.Failure ?: return false
+            val failureClass =
+                classifyFailure(failure.kind, failure.httpCode, hasValidatedInternet())
+            recordDiagnostic(api, failureClass.name, failure.httpCode)
+            val existing = dao.get(key)
+            if (existing != null) {
+                dao.upsert(existing.copy(consecutiveFailures = existing.consecutiveFailures + 1))
             }
             return false
         }

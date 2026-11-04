@@ -14,8 +14,8 @@ android {
         applicationId = "app.havenos.launcher"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "2.0"
+        versionCode = 14
+        versionName = "3.1.1"
     }
 
     // Signing is developer-supplied and intentionally not committed here.
@@ -26,12 +26,12 @@ android {
 
     buildTypes {
         debug {
-                    }
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             isDebuggable = false
-                        proguardFiles(
+            proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )

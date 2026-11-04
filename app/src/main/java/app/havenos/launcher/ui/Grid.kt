@@ -366,7 +366,22 @@ fun dropZoneFor(center: Float, offset: Float, size: Float): DropZone {
 // Layout snapshots (undo). JSON via org.json; parsing never throws.
 // ---------------------------------------------------------------------------
 
-fun snapshotJson(items: List<HomeItem>, folders: List<Folder>): String {
+/**
+ * Coordination fix §5: the snapshot format, extended once to the FULL
+ * [app.havenos.launcher.data.LayoutState] — dock, hidden, Today cards,
+ * recents — so undo restores the whole state, including the
+ * dock-drag-out case (grid item + dock entry together). The new keys
+ * are defaulted, so every old caller compiles unchanged and old
+ * snapshots still parse: [parseSnapshot] ignores the extra keys.
+ */
+fun snapshotJson(
+    items: List<HomeItem>,
+    folders: List<Folder>,
+    dock: List<String> = emptyList(),
+    hidden: Set<String> = emptySet(),
+    todayCards: List<app.havenos.launcher.data.TodayCard> = emptyList(),
+    recents: List<String> = emptyList(),
+): String {
     val root = JSONObject()
     val itemsArr = JSONArray()
     for (it in items) {
@@ -398,7 +413,55 @@ fun snapshotJson(items: List<HomeItem>, folders: List<Folder>): String {
     }
     root.put("items", itemsArr)
     root.put("folders", foldersArr)
+    if (dock.isNotEmpty()) root.put("dock", JSONArray(dock))
+    if (hidden.isNotEmpty()) root.put("hidden", JSONArray(hidden.toList()))
+    if (todayCards.isNotEmpty()) {
+        val cardsArr = JSONArray()
+        for (c in todayCards) {
+            cardsArr.put(JSONObject().put("id", c.id).put("kind", c.kind))
+        }
+        root.put("todayCards", cardsArr)
+    }
+    if (recents.isNotEmpty()) root.put("recents", JSONArray(recents))
     return root.toString()
+}
+
+/**
+ * Parse a full snapshot: items/folders from [parseSnapshot], the §5
+ * keys when present, [current]'s values otherwise (old-format
+ * snapshots carry no dock/hidden/Today/recents, so they restore
+ * layout-only, exactly as before). Never throws.
+ */
+fun parseFullSnapshot(
+    json: String,
+    current: app.havenos.launcher.data.LayoutState,
+): app.havenos.launcher.data.LayoutState {
+    val (items, folders) = parseSnapshot(json)
+    return try {
+        val root = JSONObject(json)
+        val dock = root.optJSONArray("dock")?.let { arr ->
+            (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }
+        } ?: current.dock
+        val hidden = root.optJSONArray("hidden")?.let { arr ->
+            (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }.toSet()
+        } ?: current.hidden
+        val todayCards = root.optJSONArray("todayCards")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id", "")
+                if (id.isEmpty()) null
+                else app.havenos.launcher.data.TodayCard(id, o.optInt("kind", 0))
+            }
+        } ?: current.todayCards
+        val recents = root.optJSONArray("recents")?.let { arr ->
+            (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }
+        } ?: current.recents
+        app.havenos.launcher.data.LayoutState(items, folders, dock, todayCards, hidden, recents)
+    } catch (t: Throwable) {
+        app.havenos.launcher.data.LayoutState(
+            items, folders, current.dock, current.todayCards, current.hidden, current.recents,
+        )
+    }
 }
 
 fun parseSnapshot(json: String): Pair<List<HomeItem>, List<Folder>> {

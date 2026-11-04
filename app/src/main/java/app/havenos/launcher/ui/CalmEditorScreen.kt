@@ -1,5 +1,7 @@
 package app.havenos.launcher.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -7,12 +9,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,9 +23,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.sp
 import app.havenos.launcher.data.AppEntry
+import app.havenos.launcher.theme.LocalAccentRoles
+import app.havenos.launcher.ui.glass.HavenSlider
+import app.havenos.launcher.ui.glass.HavenSwitch
 import app.havenos.launcher.data.CALM_EDITOR_MAX
 import app.havenos.launcher.data.CalmEditorState
 import app.havenos.launcher.data.CalmEntryOptions
@@ -137,38 +144,70 @@ fun CalmEditorScreen(
         Spacer(Modifier.height(16.dp))
 
         // ---- schedule ----
+        // 3.1 Phase C: accent appears in Calm ONLY for schedule state —
+        // the Schedule label itself when the schedule is enabled.
+        val roles = LocalAccentRoles.current
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Schedule", fontSize = 17.sp, modifier = Modifier.weight(1f))
-            Switch(
+            Text(
+                "Schedule",
+                fontSize = 17.sp,
+                color = if (state.scheduleEnabled) Color(roles.accent) else Color.Unspecified,
+                modifier = Modifier.weight(1f),
+            )
+            HavenSwitch(
                 checked = state.scheduleEnabled,
-                onCheckedChange = { state = state.copy(scheduleEnabled = it) },
+                onChange = { state = state.copy(scheduleEnabled = it) },
             )
         }
         if (state.scheduleEnabled) {
             Row(Modifier.fillMaxWidth()) {
                 for ((day, label) in DAY_LABELS) {
+                    val selected = day in state.days
                     TextButton(
                         onClick = { state = state.withDayToggled(day) },
                     ) {
-                        Text(if (day in state.days) "[$label]" else label, fontSize = 13.sp)
+                        Box(
+                            Modifier
+                                .sizeIn(minWidth = 48.dp, minHeight = 32.dp)
+                                .then(
+                                    if (selected) {
+                                        Modifier.clip(RoundedCornerShape(50))
+                                            .background(Color(roles.accentContainer))
+                                    } else Modifier,
+                                )
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                label,
+                                fontSize = 13.sp,
+                                color = if (selected) Color(roles.accent) else Color.Unspecified,
+                            )
+                        }
                     }
                 }
             }
             Text("From ${minutesLabel(state.startMinutes)}", fontSize = 14.sp)
-            Slider(
+            HavenSlider(
                 value = state.startMinutes.toFloat(),
+                valueRange = 0f..1439f,
+                steps = 0,
                 onValueChange = {
                     state = state.copy(startMinutes = (it.toInt() / 15 * 15).coerceIn(0, 1439))
                 },
-                valueRange = 0f..1439f,
+                onCommit = {},
+                valueText = { minutesLabel(it.toInt()) },
             )
             Text("To ${minutesLabel(state.endMinutes)}", fontSize = 14.sp)
-            Slider(
+            HavenSlider(
                 value = state.endMinutes.toFloat(),
+                valueRange = 0f..1439f,
+                steps = 0,
                 onValueChange = {
                     state = state.copy(endMinutes = (it.toInt() / 15 * 15).coerceIn(0, 1439))
                 },
-                valueRange = 0f..1439f,
+                onCommit = {},
+                valueText = { minutesLabel(it.toInt()) },
             )
             Text(
                 "An overnight window (end before start) wraps past midnight. " +
@@ -182,18 +221,21 @@ fun CalmEditorScreen(
         Text("Entry", fontSize = 17.sp)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Auto-enter on schedule", fontSize = 15.sp, modifier = Modifier.weight(1f))
-            Switch(
+            HavenSwitch(
                 checked = state.entry.autoEnter,
-                onCheckedChange = { state = state.copy(entry = state.entry.copy(autoEnter = it)) },
+                onChange = { state = state.copy(entry = state.entry.copy(autoEnter = it)) },
             )
         }
         Text("Dim ${if (state.entry.dimPct > 0) "${state.entry.dimPct}%" else "(automatic)"}", fontSize = 14.sp)
-        Slider(
+        HavenSlider(
             value = state.entry.dimPct.toFloat(),
+            valueRange = 0f..100f,
+            steps = 0,
             onValueChange = {
                 state = state.copy(entry = CalmEntryOptions(state.entry.autoEnter, it.toInt().coerceIn(0, 100)))
             },
-            valueRange = 0f..100f,
+            onCommit = {},
+            valueText = { "${it.toInt()}%" },
         )
         if (errors.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))

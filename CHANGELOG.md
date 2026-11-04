@@ -4,6 +4,141 @@ All notable changes to HavenOS are documented here. HavenOS is a launcher;
 `versionName` marks the major line, `versionCode` increments per release
 so builds stay distinguishable.
 
+## [3.1.1] — 2026-10-31 — versionCode 14
+
+Crash hotfix on top of 3.1, plus one follow-up fix to the same build
+(the fixed APK swaps into this release in place; the version number
+does not change for a fix).
+
+### Crash sweep and hardening
+
+- Every throwing lookup (`firstNotNullOf`, `first`, `single`, `last`,
+  `maxOf`, `minOf`, `getValue`, `!!`, `requireNotNull`) reachable from
+  coroutines or the mascot, Find, island, ledge, search and dock code
+  replaced with an OrNull variant and a defined fallback. The mascot
+  planner never throws on zero ledges: it stays put or respawns on the
+  dock top.
+- Failure isolation: mascot, island, Find and online-card code run in
+  supervised scopes. On an exception the feature is disabled for the
+  session, the error is logged to local-only Diagnostics, and one toast
+  is shown. Feature failures never reach the Activity.
+- Crash-loop protection: an UncaughtExceptionHandler writes a small
+  timestamped marker, then delegates. Two or more crashes within 60
+  seconds start the next launch in Safe Mode (mascot, island, online
+  workers and blur off) with a recovery banner, Re-enable and View
+  details. Safe Mode clears after 10 minutes of stable running or on
+  re-enable. Diagnostics shows the last crash (class, message, time,
+  versionCode), local only, shareable by the user.
+- Release traces keep line numbers (`-keepattributes
+  SourceFile,LineNumberTable`). Mapping files are retained per release
+  under `release-artifacts/mapping-<versionCode>.txt`, starting with
+  vc14 — the vc13 trace cannot be retraced because no mapping was kept
+  for it. Retrace command documented in BUILDING.md.
+
+### Touch, Settings, drawer, bubble
+
+- Touch pass-through: the mascot overlay never intercepts touches
+  outside the sprite hitbox and the bubble; the hitbox follows the
+  drawn position; a swipe dismisses the bubble and still scrolls the
+  pager. The frame loop runs only while moving.
+- Settings layout fix: panel width clamps to 640–920 dp (56% of the
+  window); rail collapses to icon-only 72 dp under 900 dp and expands
+  to 200 dp above; single-pane navigation under 560 dp; detail pane
+  at least 360 dp. Setting rows stack (label on top, value + control
+  beneath) instead of crushing labels. Segmented controls use equal
+  segments of at least 64 dp or wrap/scroll. API key fields put the
+  label above a full-width field with a 72 dp button row.
+- Drawer fully solid: a new `drawerSurface` token (dark near-black
+  with ~4% accent at alpha 1.0, light off-white, 4.5:1 contrast),
+  translation-only opening, 40% scrim behind, solid search field,
+  A-Z rail and letter bubble. Glass remains only for floating things
+  (dock, Today cards, menus, popovers).
+- Mascot bubble to the E3 spec: pixel-stepped border, readable text,
+  four 48 dp icon chips (Find, Help, Suggest, Dismiss),
+  keyboard-aware placement.
+
+### Fix-1 to this build (same versionCode 14)
+
+- The first vc14 build crashed on device with `NoSuchElementException:
+  ArrayDeque is empty`, retraced via the retained vc14 mapping to the
+  mascot route planner's BFS: the 3.1.1 fix had added a fallback after
+  the lookup while the throw happened inside it (one `removeFirst`
+  per ledge tested). Fixed by removing the queue head once, outside
+  the lookup, with a regression test. All other `removeFirst` sites
+  audited guarded or OrNull.
+
+### Known limitations (device checks still open)
+
+- Everything visual or gesture-related in this hotfix is built but not
+  device-verified: Pad checks H-1…H-10 in `docs/DEVICE_CHECKLIST.md`.
+- The PagedHome `!!` sites (`appEntry`, `folder`, ghost `overCell`)
+  were deliberately left out of this sweep and need a scoping decision.
+
+## [3.1] — 2026-10-30 — versionCode 13
+
+Haven Glass design system plus the pixel mascot and on-device assist,
+built in phases A–G on top of the 3.0 coordination fix.
+
+- Phase A: 13 data, coordination and edge fixes (score/status
+  tables, one-place failure classification, crypto 3-state + key
+  deep-link, page-leak clip, glance rule, rail dock inset, 48 dp dock
+  tiles, shared-axis transitions, durable undo grid-override frames,
+  legibility cache split, nav-bar restore, paused-service banner).
+- Phase B: `ui/glass/` design system (Glass1/2/3, HavenIcon vectors,
+  full accent system — Wallpaper as suggestion only, System, 12 named
+  Curated colors, Custom + strength) and the purple-Default-card root
+  fix.
+- Phase C: Glass on every non-home surface; fixed a real bug where the
+  quick-customize Widgets branch did nothing when tapped.
+- Phase D: home search widget as one Glass card.
+- Phase E: pixel mascot rebuilt (Milo + Mila original 24×24 sprites,
+  ledge engine with clearance rule, BFS routing, tracked Find flow,
+  hub with animated preview, tips and quiet hours). Old vector kept
+  behind a flag until the pixel art is accepted.
+- Phase F: on-device assist seam (compound command grammar, sealed
+  whitelist router, AI Privacy Ledger) with the model pack as a
+  scaffold only (no runtime wired, no URL or checksum configured).
+- Phase G: verification, docs, consolidated checklist, version stamp.
+
+### Known limitations (device checks still open)
+
+- Zero tests ran across 3.1: the test tree does not compile
+  (305 pre-existing errors, mostly `kotlin.test` imports against a
+  JUnit4-only declaration). Lint shows 16 pre-existing errors.
+- The manual PDF still describes 3.0; its source is updated to 3.1.
+- Quick tune Mode gained a System option and the C5 toolbar group
+  boundaries are the implementer's reading — both await confirmation.
+- SearchCard command rows and the remaining Phase E blocked items
+  (pixel-stepped bubble border, per-card rail ledges, side-dock perch,
+  dock-app Find rings, guide mid-trip) were deferred; the bubble
+  border landed later in 3.1.1.
+
+## [3.0] — 2026-10-28 — versionCode 12
+
+Vector mascot and dynamic island, both default OFF, on top of the 2.0
+API foundation.
+
+- Mascot (Milo/Mila): original vector character with scripted
+  behavior only — no language model wired. Roams the home, Find flow,
+  hub with tips and quiet hours.
+- Dynamic island: original implementation (not copied from any
+  reference launcher), default OFF, with legibility and polling fixes
+  from the coordination pass.
+- Coordination fix (all 7 design-doc sections): occupancy engine
+  contract, unified mutation path, durable undo/snapshot strategy,
+  profile derivation, online worker failure surface, Settings hub and
+  panel simplification, implementation order. Six documented
+  deviations (density routing blocked, host drag/drop writes not yet
+  routed through commit, profiles written but host still renders from
+  Room, one grid effect/commit race, Room+DataStore not one
+  transaction, DeviceDataHub restore path left direct).
+
+### Known limitations (device checks still open)
+
+- Pad checks COORD-1…15, V3-MASCOT-1…8 and V3-ISLAND-1…9 were still
+  owed at release time; nothing in this version was device-verified
+  before shipping.
+
 ## [2.0] — 2026-10-26 — versionCode 11
 
 API integration. The offline-only rule is lifted: the launcher may now use

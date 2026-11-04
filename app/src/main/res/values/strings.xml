@@ -2,4 +2,8 @@
 <resources>
     <string name="app_name">HavenOS</string>
     <string name="nav_service_description">HavenOS navigation gestures. Performs Back, Home and Recents when you swipe from the screen edges. It does not read or collect what is on your screen.</string>
+    <!-- v3 Track A (Mascot): placeholder launch-pair names. Renaming is a
+         one-line change here; never Nova, never Luna. -->
+    <string name="mascot_name_milo">Milo</string>
+    <string name="mascot_name_mila">Mila</string>
 </resources>

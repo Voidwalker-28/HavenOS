@@ -52,9 +52,27 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import app.havenos.launcher.ui.assist.AssistCommand
+import app.havenos.launcher.ui.assist.AssistContext
+import app.havenos.launcher.ui.assist.effectiveIconDp
+import app.havenos.launcher.ui.assist.parseAssistCommands
+import app.havenos.launcher.ui.glass.CURATED_ACCENTS
+import app.havenos.launcher.ui.glass.HavenGlassDialog
+import app.havenos.launcher.ui.glass.HavenIcon
+import app.havenos.launcher.ui.glass.HavenIconImage
+import app.havenos.launcher.ui.glass.HavenMenuRow
+import app.havenos.launcher.ui.glass.HavenSegmented
+import app.havenos.launcher.ui.glass.HavenType
+import app.havenos.launcher.ui.glass.vector
+import app.havenos.launcher.ui.mascot.MascotCharacter
+import app.havenos.launcher.ui.mascot.MascotExpression
+import app.havenos.launcher.ui.mascot.MascotFigure
+import app.havenos.launcher.ui.mascot.StaticSpriteFrame
+import app.havenos.launcher.ui.mascot.USE_PIXEL_MASCOT
+import app.havenos.launcher.ui.mascot.rememberSpriteSet
+import app.havenos.launcher.ui.mascot.spriteScaleFor
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +89,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -85,13 +104,14 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -123,7 +143,6 @@ import app.havenos.launcher.data.parseMembers
 import app.havenos.launcher.theme.GlassSurface
 import app.havenos.launcher.theme.LocalFont
 import app.havenos.launcher.theme.LocalPalette
-import app.havenos.launcher.theme.LocalTokens
 import app.havenos.launcher.ui.settings.shell.InlineSlider
 import app.havenos.launcher.ui.settings.shell.InlineSwitch
 import app.havenos.launcher.ui.settings.shell.SearchEntry
@@ -413,6 +432,9 @@ fun LibraryOverlay(
     onLaunch: (AppEntry) -> Unit,
     onAddToHome: (AppEntry) -> Unit,
     onOpenSettings: (String) -> Unit = {},
+    // 3.1 Phase F (F2): assist commands. Null suppresses the rows
+    // (the panel-search preview mini drawer passes nothing).
+    onAssistCommand: ((List<AssistCommand>) -> Unit)? = null,
     onDragOut: ((LibraryDragPayload) -> Unit)? = null,
     onViewChanged: ((LibraryView) -> Unit)? = null,
     preview: Boolean = false,
@@ -533,11 +555,16 @@ fun LibraryOverlay(
         else -> "A–Z"
     }
 
+    // 3.1.1 (item 6): FULLY SOLID sheet — no transparency, no blur,
+    // no home content visible through it in any state. The 40%
+    // scrim sits behind the sheet (visible only at the rounded
+    // top corners); the sheet itself is the opaque drawerSurface.
+    // The Phase C Glass2-sheet approach is overridden for the
+    // drawer only; glass stays for floating things.
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.40f))
-            .background(palette.glass.copy(alpha = LocalTokens.current.glassAlpha))
+            .background(Color.Black.copy(alpha = 0.4f))
             .statusBarsPadding()
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
@@ -550,8 +577,33 @@ fun LibraryOverlay(
     ) {
         val expanded = maxWidth >= 840.dp
 
-        Column(Modifier.fillMaxSize()) {
-            // ---- Top: centred search field + close / settings actions.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+                .background(palette.drawerSurface),
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                // 1dp hairline on the top edge only, then the handle.
+                Box(
+                    Modifier.fillMaxWidth().height(1.dp)
+                        .background(palette.onSurface.copy(alpha = 0.12f)),
+                )
+                Box(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier.width(48.dp).height(4.dp)
+                            .clip(RoundedCornerShape(percent = 50))
+                            .background(palette.onSurface.copy(alpha = 0.25f)),
+                    )
+                }
+                // 3.1 Phase C: IME insets — the search field stays
+                // visible and the results resize instead of sliding
+                // under the keyboard.
+                Column(Modifier.weight(1f).imePadding()) {
+            // ---- Top: centred search field + close action.
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -571,42 +623,54 @@ fun LibraryOverlay(
                     },
                 )
                 if (expanded) Spacer(Modifier.weight(1f))
-                TextButton(onClick = { onOpenSettings("App drawer") }) {
-                    Text("⋮", color = palette.onSurface, fontSize = 20.sp)
-                }
                 TextButton(onClick = { closeLibrary() }) {
                     Text("Close", color = palette.onSurface)
                 }
             }
 
-            // ---- Segmented control + sort chip (hidden while searching).
+            // ---- One compact toolbar row: view segmented + sort
+            // icon button + drawer-settings menu (hidden while searching).
             if (!searching) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    LibrarySegmentedControl(
-                        options = buildList {
-                            add("All" to LibraryView.ALL)
-                            if (categoriesContent != null) {
-                                add("Categories" to LibraryView.CATEGORIES)
-                            }
-                            add("List" to LibraryView.LIST)
-                        },
-                        selected = effectiveView,
-                        onSelect = { selectView(it) },
+                    val viewOptions = buildList {
+                        add("All" to LibraryView.ALL)
+                        if (categoriesContent != null) {
+                            add("Categories" to LibraryView.CATEGORIES)
+                        }
+                        add("List" to LibraryView.LIST)
+                    }
+                    HavenSegmented(
+                        options = viewOptions.map { it.first },
+                        selected = viewOptions.indexOfFirst { it.second == effectiveView }
+                            .coerceAtLeast(0),
+                        onSelect = { selectView(viewOptions[it].second) },
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    Spacer(Modifier.weight(1f))
                     Box(
-                        Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(palette.glass.copy(alpha = 0.6f))
-                            .clickable { cycleSort() }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        Modifier.size(48.dp).clickable { cycleSort() },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Text("Sort: $sortLabel", color = palette.onSurface, fontSize = 13.sp)
+                        HavenIconImage(
+                            HavenIcon.Sort,
+                            "Sort: $sortLabel",
+                            size = 24.dp,
+                            tint = palette.onSurface,
+                        )
+                    }
+                    Box(
+                        Modifier.size(48.dp).clickable { onOpenSettings("App drawer") },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        HavenIconImage(
+                            HavenIcon.Menu,
+                            "Drawer settings",
+                            size = 24.dp,
+                            tint = palette.onSurface,
+                        )
                     }
                 }
 
@@ -644,6 +708,7 @@ fun LibraryOverlay(
                             onLaunch = { launchFromLibrary(it) },
                             onOpenSettings = onOpenSettings,
                             onRecordSearch = { recordSearch(it) },
+                            onAssistCommand = if (preview) null else onAssistCommand,
                         )
                     }
                     effectiveView == LibraryView.CATEGORIES -> {
@@ -749,7 +814,7 @@ fun LibraryOverlay(
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(50))
-                            .background(palette.glass.copy(alpha = 0.6f))
+                            .background(palette.drawerField)
                             .clickable { onOpenSettings("Privacy & Lock") }
                             .padding(horizontal = 14.dp, vertical = 8.dp),
                     ) {
@@ -762,73 +827,76 @@ fun LibraryOverlay(
                 }
             }
         }
-    }
+    } // 3.1.1 (item 6): handle Column close
+    } // 3.1.1 (item 6): solid sheet Box close
+    } // BoxWithConstraints close (restored: the insert above replaced it)
 
     // ---- Icon menu (same rows as the home icon menu).
+    // 3.1 Phase C: Glass3 dialog with icon+label rows (48dp);
+    // Uninstall is destructive (danger tint + text).
     val entry = menuEntry
     if (entry != null) {
-        AlertDialog(
-            onDismissRequest = { menuEntry = null },
-            title = { Text(entry.label) },
-            text = {
-                Column {
-                    MenuRow("Launch") { menuEntry = null; launchFromLibrary(entry) }
-                    MenuRow("Add to home") { menuEntry = null; onAddToHome(entry) }
-                    when {
-                        entry.key in state.dock -> MenuRow("Remove from dock") {
-                            menuEntry = null
-                            scope.launch { app.settings.setDock(state.dock - entry.key) }
-                        }
-                        state.dock.size < state.dockMax -> MenuRow("Add to dock") {
-                            menuEntry = null
-                            scope.launch { app.settings.setDock(state.dock + entry.key) }
-                        }
-                        else -> MenuRow("Dock is full") { menuEntry = null }
-                    }
-                    MenuRow("Edit label") {
-                        menuEntry = null; labelDialogEntry = entry
-                    }
-                    MenuRow("Edit icon") {
-                        menuEntry = null; iconDialogEntry = entry
-                    }
-                    MenuRow("Hide app") {
+        HavenGlassDialog(
+            onDismiss = { menuEntry = null },
+            title = entry.label,
+            buttons = {
+                TextButton(onClick = { menuEntry = null }) { Text("Cancel") }
+            },
+            content = {
+                HavenMenuRow(HavenIcon.MediaPlay, "Launch") { menuEntry = null; launchFromLibrary(entry) }
+                HavenMenuRow(HavenIcon.Home, "Add to home") { menuEntry = null; onAddToHome(entry) }
+                when {
+                    entry.key in state.dock -> HavenMenuRow(HavenIcon.Layers, "Remove from dock") {
                         menuEntry = null
-                        scope.launch {
-                            app.settings.setHiddenJson(
-                                encodeMembers((hidden + entry.key).toList()),
-                            )
-                        }
+                        scope.launch { app.settings.setDock(state.dock - entry.key) }
                     }
-                    MenuRow("App info") {
+                    state.dock.size < state.dockMax -> HavenMenuRow(HavenIcon.Layers, "Add to dock") {
                         menuEntry = null
-                        try {
-                            context.startActivity(
-                                Intent(
-                                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                    Uri.parse("package:" + entry.pkg),
-                                ),
-                            )
-                        } catch (t: Throwable) {
-                            // system activity unavailable
-                        }
+                        scope.launch { app.settings.setDock(state.dock + entry.key) }
                     }
-                    MenuRow("Uninstall") {
-                        menuEntry = null
-                        try {
-                            context.startActivity(
-                                Intent(
-                                    Intent.ACTION_DELETE,
-                                    Uri.parse("package:" + entry.pkg),
-                                ),
-                            )
-                        } catch (t: Throwable) {
-                            // system activity unavailable
-                        }
+                    else -> HavenMenuRow(HavenIcon.Layers, "Dock is full") { menuEntry = null }
+                }
+                HavenMenuRow(HavenIcon.Gear, "Edit label") {
+                    menuEntry = null; labelDialogEntry = entry
+                }
+                HavenMenuRow(HavenIcon.Image, "Edit icon") {
+                    menuEntry = null; iconDialogEntry = entry
+                }
+                HavenMenuRow(HavenIcon.Eye, "Hide app") {
+                    menuEntry = null
+                    scope.launch {
+                        app.settings.setHiddenJson(
+                            encodeMembers((hidden + entry.key).toList()),
+                        )
+                    }
+                }
+                HavenMenuRow(HavenIcon.Info, "App info") {
+                    menuEntry = null
+                    try {
+                        context.startActivity(
+                            Intent(
+                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:" + entry.pkg),
+                            ),
+                        )
+                    } catch (t: Throwable) {
+                        // system activity unavailable
+                    }
+                }
+                HavenMenuRow(HavenIcon.Close, "Uninstall", destructive = true) {
+                    menuEntry = null
+                    try {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_DELETE,
+                                Uri.parse("package:" + entry.pkg),
+                            ),
+                        )
+                    } catch (t: Throwable) {
+                        // system activity unavailable
                     }
                 }
             },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { menuEntry = null }) { Text("Cancel") } },
         )
     }
 
@@ -1064,7 +1132,7 @@ fun SearchCard(
                                             Box(
                                                 Modifier
                                                     .clip(RoundedCornerShape(50))
-                                                    .background(palette.glass.copy(alpha = 0.6f))
+                                                    .background(palette.drawerField)
                                                     .clickable { query = h }
                                                     .padding(horizontal = 14.dp, vertical = 8.dp),
                                             ) {
@@ -1098,6 +1166,9 @@ fun SearchCard(
                                 },
                                 onOpenSettings = onOpenSettings,
                                 onRecordSearch = { recordSearch(it) },
+                                // 3.1 Phase F: SearchCard has no command
+                                // handler wired (default null = no rows);
+                                // drawer + panel search cover §F2.
                             )
                         }
                     }
@@ -1125,6 +1196,7 @@ private fun SearchResultsList(
     onLaunch: (AppEntry) -> Unit,
     onOpenSettings: (String) -> Unit,
     onRecordSearch: (String) -> Unit,
+    onAssistCommand: ((List<AssistCommand>) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalPalette.current
@@ -1144,6 +1216,24 @@ private fun SearchResultsList(
         else emptyList()
     }
     val actionHits = remember(query) { libraryActions(query) }
+
+    // 3.1 Phase F (F2): assist commands parse from the same query.
+    // Null means "not a command" — normal search renders unchanged.
+    // One row for the whole compound: compounds are all-or-nothing.
+    val assistCommands = remember(apps, query, stats, state) {
+        if (onAssistCommand == null) null
+        else parseAssistCommands(
+            query,
+            AssistContext(
+                apps = apps.map { it.toLibraryApp() },
+                stats = stats,
+                darkMode = state.darkMode,
+                effectiveIconDp = effectiveIconDp(state.iconSizeOverride, state.density),
+                curatedNames = CURATED_ACCENTS.map { it.name },
+                commandsEnabled = state.assistSearchCommands,
+            ),
+        )
+    }
 
     // v2 M1 search extras: pure parses only. The rows themselves render
     // below, inside this same LazyColumn, and never replace a section
@@ -1184,6 +1274,29 @@ private fun SearchResultsList(
     }
 
     LazyColumn(modifier = modifier.fillMaxSize()) {
+        if (assistCommands != null && assistCommands.isNotEmpty()) {
+            item { SectionHeader("Assist commands") }
+            item {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            onRecordSearch(query)
+                            onAssistCommand?.invoke(assistCommands)
+                        }
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        assistCommands.joinToString(" · ") { it.label },
+                        color = palette.onSurface,
+                        fontSize = 15.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text("Apply", color = palette.accent, fontSize = 12.sp)
+                }
+            }
+        }
         if (ranked.isNotEmpty()) {
             item { SectionHeader("Apps") }
             items(ranked, key = { "app:${it.key}" }) { libApp ->
@@ -1196,6 +1309,7 @@ private fun SearchResultsList(
                     onMenu = {},
                     onDragOut = null,
                     showMenuButton = false,
+                    highlight = query,
                 )
             }
         }
@@ -1266,7 +1380,12 @@ private fun SearchResultsList(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column {
-                        Text(hit.name, color = palette.onSurface, fontSize = 15.sp, maxLines = 1)
+                        Text(
+                            highlightedLabel(hit.name, query, palette.onSurface, palette.accent),
+                            color = palette.onSurface,
+                            fontSize = 15.sp,
+                            maxLines = 1,
+                        )
                         Text(hit.number, color = palette.muted, fontSize = 12.sp, maxLines = 1)
                     }
                 }
@@ -1311,12 +1430,42 @@ private fun SearchResultsList(
         if (ranked.isEmpty() && calcResult == null && contacts.isEmpty() &&
             events.isEmpty() && settingsHits.isEmpty() && actionHits.isEmpty()
         ) {
+            // 3.1 Phase C: empty state uses the sad mascot pose; the
+            // Web fallback below still offers a way forward.
             item {
-                Text(
-                    "No app, setting or contact matches — try the web result below",
-                    color = palette.muted,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                )
+                val character =
+                    if (state.mascotCharacter == 1) MascotCharacter.MILA else MascotCharacter.MILO
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    // 3.1 Phase E: pixel surprised frame when
+                    // available (this is a Find no-match state), else
+                    // the vector pose. Static image only.
+                    val noMatchSet = rememberSpriteSet(character, palette.accent.toArgb())
+                    if (USE_PIXEL_MASCOT && noMatchSet != null) {
+                        StaticSpriteFrame(
+                            noMatchSet, 28,
+                            spriteScaleFor(64f, LocalDensity.current.density),
+                        )
+                    } else {
+                        MascotFigure(
+                            character = character,
+                            expression = MascotExpression.SAD,
+                            size = 64.dp,
+                            body = palette.onSurface,
+                            eye = palette.surface,
+                            accent = palette.accent,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("No matches", color = palette.onSurface, fontSize = 16.sp)
+                    Text(
+                        "No app, setting or contact matches — try the web result below",
+                        color = palette.muted,
+                        fontSize = 13.sp,
+                    )
+                }
             }
         }
     }
@@ -1677,19 +1826,23 @@ private fun LibrarySearchField(
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalPalette.current
-    GlassSurface(
-        shape = RoundedCornerShape(50),
-        modifier = modifier.height(56.dp),
+    // 3.1.1 (item 6): solid filled field — no glass, no blur, so
+    // no home content can show through the drawer search field.
+    Box(
+        modifier
+            .height(56.dp)
+            .background(palette.drawerField, RoundedCornerShape(50)),
+        contentAlignment = Alignment.Center,
     ) {
         Row(
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                painter = painterResource(R.drawable.ic_search),
-                contentDescription = "Search",
+            HavenIconImage(
+                HavenIcon.Search,
+                "Search",
+                size = 20.dp,
                 tint = palette.onSurface,
-                modifier = Modifier.size(20.dp),
             )
             Spacer(Modifier.width(8.dp))
             Box(Modifier.weight(1f)) {
@@ -1702,6 +1855,7 @@ private fun LibrarySearchField(
                     singleLine = true,
                     textStyle = TextStyle(color = palette.onSurface, fontSize = 17.sp),
                     cursorBrush = SolidColor(palette.accent),
+                    // Keyboard Search action runs the search (submit).
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
                     modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
@@ -1709,48 +1863,13 @@ private fun LibrarySearchField(
             }
             if (query.isNotEmpty()) {
                 TextButton(onClick = { onQueryChange("") }) {
-                    Text("✕", color = palette.onSurface)
-                }
-            }
-        }
-    }
-}
-
-/** All · Categories · List segmented control. The Categories option is
- * only passed in when its content exists, so the tab hides otherwise. */
-@Composable
-private fun LibrarySegmentedControl(
-    options: List<Pair<String, LibraryView>>,
-    selected: LibraryView,
-    onSelect: (LibraryView) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val palette = LocalPalette.current
-    Row(
-        modifier
-            .clip(RoundedCornerShape(50))
-            .background(palette.glass.copy(alpha = 0.6f))
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        for ((label, view) in options) {
-            val isSelected = view == selected
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(
-                        if (isSelected) palette.accent.copy(alpha = 0.25f) else Color.Transparent,
+                    Icon(
+                        HavenIcon.Close.vector(),
+                        contentDescription = "Clear search",
+                        tint = palette.onSurface,
+                        modifier = Modifier.size(20.dp),
                     )
-                    .clickable { onSelect(view) }
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-            ) {
-                Text(
-                    label,
-                    color = if (isSelected) palette.accent else palette.onSurface,
-                    fontSize = 13.sp,
-                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                )
+                }
             }
         }
     }
@@ -1786,7 +1905,7 @@ private fun LibraryListView(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .background(palette.glass.copy(alpha = LocalTokens.current.glassAlpha))
+                        .background(palette.drawerField)
                         .padding(horizontal = 20.dp, vertical = 4.dp),
                 ) {
                     Text(
@@ -1823,6 +1942,28 @@ private fun LibraryListView(
 }
 
 /** 56dp, 16sp list row. Icon long-press drags; ⋮ opens the menu. */
+/** 3.1 Phase C: label with query matches in accent + semibold. */
+private fun highlightedLabel(
+    text: String,
+    query: String?,
+    base: androidx.compose.ui.graphics.Color,
+    accent: androidx.compose.ui.graphics.Color,
+): AnnotatedString {
+    if (query.isNullOrBlank()) return AnnotatedString(text)
+    val spans = matchSpans(text, query)
+    if (spans.isEmpty()) return AnnotatedString(text)
+    return buildAnnotatedString {
+        append(text)
+        for (span in spans) {
+            addStyle(
+                SpanStyle(color = accent, fontWeight = FontWeight.SemiBold),
+                span.first,
+                span.last + 1,
+            )
+        }
+    }
+}
+
 @Composable
 private fun LibraryListRow(
     app: HavenApp,
@@ -1832,6 +1973,9 @@ private fun LibraryListRow(
     onMenu: (AppEntry) -> Unit,
     onDragOut: ((LibraryDragPayload) -> Unit)?,
     showMenuButton: Boolean = true,
+    // 3.1 Phase C: search query to highlight in the label; null in
+    // the plain List view (no highlighting there).
+    highlight: String? = null,
 ) {
     val palette = LocalPalette.current
     val bmp = rememberAppIcon(app.appRepo, entry)
@@ -1864,7 +2008,7 @@ private fun LibraryListRow(
         }
         Spacer(Modifier.width(12.dp))
         Text(
-            entry.label,
+            highlightedLabel(entry.label, highlight, palette.onSurface, palette.accent),
             color = palette.onSurface,
             fontFamily = LocalFont.current,
             fontSize = 16.sp,
@@ -1877,7 +2021,7 @@ private fun LibraryListRow(
                 Modifier.size(48.dp).clickable { onMenu(entry) },
                 contentAlignment = Alignment.Center,
             ) {
-                Text("⋮", color = palette.onSurface, fontSize = 20.sp)
+                HavenIconImage(HavenIcon.Menu, "App menu", tint = palette.onSurface, size = 24.dp)
             }
         }
     }
@@ -2050,21 +2194,21 @@ private fun AlphabetScrubber(
             val bubbleY = with(density) {
                 (stripHeightPx * fingerFraction).toDp() - 36.dp
             }.coerceAtLeast(0.dp)
-            GlassSurface(
-                shape = CircleShape,
-                modifier = Modifier
+            // 3.1.1 (item 6): solid letter bubble (48dp strip kept).
+            Box(
+                Modifier
                     .align(Alignment.TopEnd)
                     .offset(x = (-48).dp, y = bubbleY)
-                    .size(72.dp),
+                    .size(72.dp)
+                    .background(palette.drawerField, CircleShape),
+                contentAlignment = Alignment.Center,
             ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        bubbleLetter.toString(),
-                        color = palette.onSurface,
-                        fontSize = 36.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
+                Text(
+                    bubbleLetter.toString(),
+                    color = palette.onSurface,
+                    fontSize = 36.sp,
+                    fontWeight = FontWeight.Bold,
+                )
             }
         }
     }
@@ -2127,9 +2271,8 @@ private fun SectionHeader(text: String) {
     val palette = LocalPalette.current
     Text(
         text,
+        style = HavenType.sectionLabel,
         color = palette.accent,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
     )
 }
@@ -2142,17 +2285,6 @@ private fun SearchLinkRow(text: String, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(text, color = palette.onSurface, fontSize = 15.sp, maxLines = 1)
-    }
-}
-
-@Composable
-private fun MenuRow(text: String, onClick: () -> Unit) {
-    val palette = LocalPalette.current
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text, color = palette.onSurface, fontSize = 15.sp)
     }
 }
 

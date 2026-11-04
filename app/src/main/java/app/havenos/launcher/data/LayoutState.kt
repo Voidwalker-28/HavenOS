@@ -64,27 +64,133 @@ sealed interface TxResult {
 }
 
 /**
+ * Coordination fix §2: every layout write is one of these mutations.
+ * The coordinator's [LayoutCoordinator.commitMutation] is the single
+ * path that applies them: validate, safety-net reflow, persist in one
+ * Room transaction, push the pre-commit state to undo. Callers never
+ * write positions directly. Coordinates are half-cell units; grid
+ * sizes in a mutation are CELLS (converted inside).
+ */
+sealed interface LayoutMutation {
+    /** Resulting items + dock after a drag (host-computed). */
+    data class DragDrop(val items: List<HomeItem>, val dock: List<String>) : LayoutMutation
+    /** Resize to [colSpanU] x [rowSpanU] units; needs [LayoutCoordinator.commitMutation] gridCells. */
+    data class Resize(val itemId: String, val colSpanU: Int, val rowSpanU: Int) : LayoutMutation
+    /** Place [item] on [page] (replacing the same id when present). */
+    data class PlaceItem(val item: HomeItem, val page: Int) : LayoutMutation
+    /** Remove one item (and its folder entity, when it is one). */
+    data class RemoveItem(val itemId: String) : LayoutMutation
+    /** Grid/density commit: writes the override, reflows under the new grid. */
+    data class GridChange(
+        val colsCells: Int,
+        val rowsCells: Int,
+        val landscape: Boolean,
+        /**
+         * Follow-density: clears the override instead of writing one,
+         * so the grid keeps following density. Set only by the
+         * Follow-density action; a picker Apply always writes.
+         */
+        val followDensity: Boolean = false,
+    ) : LayoutMutation
+    /** Dock position: writes the position; reflows only when gridCells change. */
+    data class DockPositionChange(val position: Int) : LayoutMutation
+    /** Today on/off: page structure changes with the setting; placements untouched. */
+    data class TodayToggle(val on: Boolean) : LayoutMutation
+    /** System lifecycle: added keys gain canonical membership (+ current
+     * profile placement when auto-add is on); removed keys vanish from
+     * layout, folders, dock, hidden, recents, and every profile. A
+     * removal never pushes undo (it would resurrect a dead icon). */
+    data class AppLifecycle(val added: List<String>, val removed: List<String>) : LayoutMutation
+    /** Re-derive every non-source profile from the current profile. */
+    data object SyncFromCurrent : LayoutMutation
+    /** Atomic restore of a full snapshot (clears undo/redo stacks). */
+    data class Restore(val snapshot: LayoutState) : LayoutMutation
+}
+
+/**
+ * 3.1 A9: the grid-override half of an undo frame. [cols]/[rows] are
+ * the override to RESTORE when the frame is applied; -1/-1 means
+ * CLEAR the override (the SettingsState convention: -1 = from
+ * density). Null on the frame means the step touched no override.
+ * Persisted in the undo_entries gridJson column ("L:8:6" /
+ * "P:-1:-1"); "" decodes to null.
+ */
+data class GridOverrideFrame(val landscape: Boolean, val cols: Int, val rows: Int)
+
+fun GridOverrideFrame.encode(): String =
+    "${if (landscape) "L" else "P"}:$cols:$rows"
+
+fun decodeGridOverrideFrame(raw: String): GridOverrideFrame? {
+    if (raw.isBlank()) return null
+    val parts = raw.split(":")
+    if (parts.size != 3) return null
+    val cols = parts[1].toIntOrNull() ?: return null
+    val rows = parts[2].toIntOrNull() ?: return null
+    return when (parts[0]) {
+        "L" -> GridOverrideFrame(true, cols, rows)
+        "P" -> GridOverrideFrame(false, cols, rows)
+        else -> null
+    }
+}
+
+/**
+ * 3.1 A9: the grid action for a frame built from the CURRENT settings
+ * while undoing/redoing [undone]. Null when the undone step touched
+ * no override. Otherwise the current override for that orientation,
+ * if one is set (redo restores it); Clear (-1/-1) when it is unset
+ * (the undone step cleared it, so redo must clear it again).
+ */
+fun gridActionForCurrentFrame(
+    undone: GridOverrideFrame?,
+    colsLand: Int, rowsLand: Int, colsPort: Int, rowsPort: Int,
+): GridOverrideFrame? {
+    if (undone == null) return null
+    val (cols, rows) = if (undone.landscape) colsLand to rowsLand else colsPort to rowsPort
+    return if (cols > 0 && rows > 0) GridOverrideFrame(undone.landscape, cols, rows)
+    else GridOverrideFrame(undone.landscape, -1, -1)
+}
+
+/**
+ * One undo frame (coordination fix §5): the pre-transaction layout
+ * AND the pre-transaction profiles. Undo entries hold both, so Sync
+ * undo and install-added undo restore profile placements too — not
+ * just the live layout. Serialized as full-snapshot JSON +
+ * [LayoutProfiles] JSON in the Room undo_entries table.
+ * 3.1 A9: [gridOverride] joins the frame when the step cleared or
+ * set a grid override (Follow density), and [label] names the change
+ * ("density grid reset") so toolbar Undo/Redo can say what they will
+ * undo. Labels are session-only (not persisted); the grid action is.
+ */
+data class UndoFrame(
+    val layout: LayoutState,
+    val profiles: LayoutProfiles,
+    val gridOverride: GridOverrideFrame? = null,
+    val label: String? = null,
+)
+
+/**
  * Shared 50-level undo stack (Doc 1 §3.7, Doc 3 §3.4): ONE object used
  * by edit mode AND Settings — Worker A adopts this class for the
  * toolbar Undo/Redo buttons (the UI-local 10-step list in Home.kt is
  * superseded by it; the coordinator owns the single instance).
- * Snapshots are whole LayoutStates (in-memory only; the stack clears
- * when the process ends — persisted snapshots in LayoutSnapshots.kt
- * handle longer recovery). Undo/redo never throws.
+ * Frames are whole pre-transaction states (layout + profiles).
+ * In-session the stack is authoritative; the coordinator mirrors it
+ * into Room (undo_entries) so process-death restart retains depth.
+ * Undo/redo never throws.
  */
 class UndoStack(private val maxLevels: Int = 50) {
-    private val undo = ArrayDeque<LayoutState>()
-    private val redo = ArrayDeque<LayoutState>()
+    private val undo = ArrayDeque<UndoFrame>()
+    private val redo = ArrayDeque<UndoFrame>()
 
-    /** Push the state BEFORE a committed transaction. Clears redo. */
-    fun push(before: LayoutState) {
+    /** Push the frame BEFORE a committed transaction. Clears redo. */
+    fun push(before: UndoFrame) {
         undo.addLast(before)
         while (undo.size > maxLevels) undo.removeFirst()
         redo.clear()
     }
 
-    /** Pop for undo: returns (stateToRestore, stateToPushOnRedo). */
-    fun popUndo(current: LayoutState): Pair<LayoutState, LayoutState>? {
+    /** Pop for undo: returns (frameToRestore, frameToPushOnRedo). */
+    fun popUndo(current: UndoFrame): Pair<UndoFrame, UndoFrame>? {
         val prev = undo.removeLastOrNull() ?: return null
         redo.addLast(current)
         while (redo.size > maxLevels) redo.removeFirst()
@@ -92,16 +198,33 @@ class UndoStack(private val maxLevels: Int = 50) {
     }
 
     /** Pop for redo. */
-    fun popRedo(current: LayoutState): LayoutState? {
+    fun popRedo(current: UndoFrame): UndoFrame? {
         val next = redo.removeLastOrNull() ?: return null
         undo.addLast(current)
         while (undo.size > maxLevels) undo.removeFirst()
         return next
     }
 
+    /** Rehydrate from durable rows (restart): oldest first, capped. */
+    fun restore(undoFrames: List<UndoFrame>, redoFrames: List<UndoFrame>) {
+        undo.clear()
+        redo.clear()
+        undo.addAll(undoFrames.takeLast(maxLevels))
+        redo.addAll(redoFrames.takeLast(maxLevels))
+    }
+
     val canUndo: Boolean get() = undo.isNotEmpty()
     val canRedo: Boolean get() = redo.isNotEmpty()
+
+    /** 3.1 A9: top frames, for toolbar Undo/Redo labels. */
+    fun peekUndo(): UndoFrame? = undo.lastOrNull()
+    fun peekRedo(): UndoFrame? = redo.lastOrNull()
+
+    /** 3.1 A9: what toolbar Undo/Redo would undo, null = plain label. */
+    val undoLabel: String? get() = undo.lastOrNull()?.label
+    val redoLabel: String? get() = redo.lastOrNull()?.label
     val undoDepth: Int get() = undo.size
+    val redoDepth: Int get() = redo.size
     fun clear() {
         undo.clear()
         redo.clear()

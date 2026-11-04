@@ -93,6 +93,46 @@ suspend fun syncNavBarPolicy(ctx: Context, settings: Settings) {
     }
 }
 
+/**
+ * 3.1 A13: gestures paused = the user wants gestures and granted
+ * the accessibility permission, but the service itself is not
+ * connected (the system stopped it). Distinct from
+ * permission-missing: the fix is Reconnect, not Allow.
+ */
+fun gestureServicePaused(gesturesOn: Boolean, serviceEnabled: Boolean, serviceConnected: Boolean): Boolean =
+    gesturesOn && serviceEnabled && !serviceConnected
+
+/**
+ * 3.1 A13: launch-time safety net. If the bar is hidden
+ * (policy_control == immersive.navigation=*) but the settings say
+ * it should NOT be (gestures off or hide toggle off) — e.g. the
+ * process died while hidden and the service never reconnected —
+ * restore the saved value (or the system default when nothing was
+ * saved). Never throws; without the adb grant the write fails and
+ * the manual row in Gestures and Motion is the fallback. Deliberately
+ * does NOT restore when the settings still say hide: a connected
+ * service owns that case, and a paused one must not fight the user.
+ */
+suspend fun restoreNavBarOnLaunch(ctx: Context, settings: Settings) {
+    navPolicyMutex.withLock {
+        try {
+            val st = settings.persistedState()
+            if (st.navGesturesOn && st.navHideBar) return@withLock
+            val current = GlobalSettings.Global.getString(ctx.contentResolver, NAV_POLICY_KEY)
+            if (current != NAV_HIDE_VALUE) return@withLock
+            if (st.navSavedPolicySet) {
+                restoreSavedPolicy(ctx, settings, st)
+            } else {
+                // Never saved (e.g. data cleared while hidden): the
+                // only safe recovery is the system default.
+                GlobalSettings.Global.putString(ctx.contentResolver, NAV_POLICY_KEY, null)
+            }
+        } catch (t: Throwable) {
+            // best-effort; grant may be gone
+        }
+    }
+}
+
 /** Restore half of [syncNavBarPolicy], for when the service goes away. Never throws. */
 suspend fun restoreNavBarPolicy(ctx: Context, settings: Settings) {
     navPolicyMutex.withLock {
@@ -121,6 +161,17 @@ private suspend fun restoreSavedPolicy(ctx: Context, settings: Settings, st: Set
  */
 class HavenAccessibilityService : AccessibilityService() {
 
+    companion object {
+        /**
+         * 3.1 A13: true while the service is connected. Same process
+         * as the app (no android:process in the manifest), so this
+         * static flag is visible to the Settings UI with no IPC.
+         */
+        @Volatile
+        var isConnected: Boolean = false
+            private set
+    }
+
     private var scope: CoroutineScope? = null
     private var windowManager: WindowManager? = null
     private val overlays = mutableListOf<View>()
@@ -135,6 +186,7 @@ class HavenAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        isConnected = true
         restoreLaunched = false
         windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         scope?.cancel()
@@ -172,6 +224,7 @@ class HavenAccessibilityService : AccessibilityService() {
     }
 
     private fun teardown() {
+        isConnected = false
         removeOverlays()
         scope?.cancel()
         scope = null

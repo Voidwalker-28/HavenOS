@@ -18,10 +18,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,6 +43,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import app.havenos.launcher.data.HomeItem
+import app.havenos.launcher.ui.glass.GlassLevel
+
+import app.havenos.launcher.ui.glass.HavenDialog
+import app.havenos.launcher.ui.glass.glass
+import app.havenos.launcher.ui.glass.glassScrimColor
 import kotlinx.coroutines.delay
 
 // ---------------------------------------------------------------------------
@@ -150,10 +153,15 @@ fun PageOverviewDialog(
     }
 
     Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(24.dp),
-            color = scheme.surface,
-            tonalElevation = 6.dp,
+        // 3.1 Phase C: Glass2 sheet — legibility scrim + Glass2 tint +
+        // hairline over the live home (same layering as the Settings
+        // panel), replacing the opaque material surface.
+        val sheetDark = with(scheme.surface) { red * 0.299f + green * 0.587f + blue * 0.114f < 0.5f }
+        Box(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(28.dp))
+                .background(glassScrimColor(sheetDark))
+                .glass(GlassLevel.GLASS2, RoundedCornerShape(28.dp)),
         ) {
             Column(
                 Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -310,31 +318,20 @@ fun PageOverviewDialog(
 
     pendingDelete?.let { page ->
         val adjacentDisplay = if (page.page > 0) page.page else page.page + 2
-        AlertDialog(
-                onDismissRequest = { pendingDelete = null },
-                title = { Text("Delete page ${page.page + 1}?", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
-                text = {
-                    Text(
-                        if (page.items.size == 1) {
-                            "1 item will move to page $adjacentDisplay."
-                        } else {
-                            "${page.items.size} items will move to page $adjacentDisplay."
-                        },
-                        fontSize = 14.sp,
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = { val p = page.page; pendingDelete = null; onDeletePage(p) }) {
-                        Text("Delete", fontWeight = FontWeight.Bold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { pendingDelete = null }) {
-                        Text("Cancel", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                    }
-                },
-            )
-        }
+        HavenDialog(
+            onDismiss = { pendingDelete = null },
+            title = "Delete page ${page.page + 1}?",
+            body = if (page.items.size == 1) {
+                "1 item will move to page $adjacentDisplay."
+            } else {
+                "${page.items.size} items will move to page $adjacentDisplay."
+            },
+            dismissLabel = "Cancel",
+            confirmLabel = "Delete",
+            onConfirm = { val p = page.page; pendingDelete = null; onDeletePage(p) },
+            danger = true,
+        )
+    }
     }
 
 @Composable
@@ -464,7 +461,7 @@ private fun PageCardGrid(
 }
 
 @Composable
-private fun PageThumbnail(
+internal fun PageThumbnail(
     page: OverviewPage,
     colsU: Int,
     rowsU: Int,
@@ -483,8 +480,8 @@ private fun PageThumbnail(
     val safeRows = rowsU.coerceAtLeast(1)
     BoxWithConstraints(
         Modifier.fillMaxWidth().height(110.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(scheme.surfaceVariant.copy(alpha = 0.45f))
+            .clip(RoundedCornerShape(20.dp))
+            .glass(GlassLevel.GLASS1, RoundedCornerShape(20.dp))
             .border(
                 width = if (highlighted || page.isDefault) 2.dp else 1.dp,
                 color = when {
@@ -492,7 +489,7 @@ private fun PageThumbnail(
                     page.isDefault -> scheme.primary.copy(alpha = 0.6f)
                     else -> scheme.onSurface.copy(alpha = 0.15f)
                 },
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(20.dp),
             ),
     ) {
         val shown = page.items.sortedWith(compareBy({ it.row }, { it.col })).take(12)
